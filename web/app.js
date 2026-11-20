@@ -99,6 +99,7 @@ async function toggleMode() {
         text: `将改为读取真实设备状态（${live}）；复位 / 开始 / 停止会真正下发给设备。当前显示的模拟状态和提醒会清空。` });
   if (!answer) return;
   view.switching = true;
+  pollSeq += 1; // 丢掉切换前还在飞的 /api/state，避免旧快照把看板画回去
   $("mode").disabled = true;
   try {
     const res = await api("POST", "/api/mode", { test: toTest, pin: answer.pin });
@@ -155,7 +156,7 @@ function isMatch(s) {
   }
   const q = view.query.trim().toLowerCase();
   if (!q) return true;
-  return `${s.name} ${s.no} ${s.ip} ${s.code ?? ""} ${codeName(s.code)}`.toLowerCase().includes(q);
+  return `${s.name} ${s.no} ${s.ip} ${s.action ?? ""} ${s.code ?? ""} ${s.fault || ""} ${codeName(s.action ?? s.code)} ${s.fault ? codeName(s.fault) : ""}`.toLowerCase().includes(q);
 }
 
 function applyFilter() {
@@ -201,6 +202,9 @@ const FLOW_BY_TYPE = {
 const FLOW_GENERIC = [180, 181, 182, 184, 185, 186, 187];
 
 function actionFlow(type) {
+  const custom = ui.state && ui.state.beats;
+  // 配置里的 _beats 优先于内置表里没有的工位（如上纸板的 250/251/252）
+  if (custom && custom.length && !FLOW_BY_TYPE[type]) return custom.slice();
   const body = FLOW_BY_TYPE[type] || FLOW_GENERIC;
   const out = [];
   const seen = new Set();
@@ -329,11 +333,14 @@ function patchCard(el, s, now) {
   const hasFault = s.known && s.fault;
   const code = !s.known ? "···" : (s.code === null ? "OFF" : String(s.action ?? s.code ?? "···"));
   let step = "等待第一次读数";
-  if (s.known) {
+    if (s.known) {
     if (s.code === null) step = codeName(null);
     else {
       step = codeName(s.action ?? s.code);
-      if (hasFault) step += ` · 异常 ${s.fault} ${codeName(s.fault)}`;
+      if (hasFault) {
+        step += ` · 异常 ${s.fault} ${codeName(s.fault)}`;
+        if (s.faultSince) step += ` ${fmtDur(now - s.faultSince)}`;
+      }
     }
   }
   const paused = s.paused ? `<span class="tag">已暂停</span>` : "";
@@ -410,10 +417,10 @@ function renderActive(state) {
 
   const html = list.map((s) => {
     const lv = viewLevel(s);
-    const code = !s.known ? "···" : (s.code === null ? "OFF" : s.code);
+    const code = !s.known ? "···" : (s.code === null ? "OFF" : (s.fault || (s.action ?? s.code)));
     return `<button type="button" class="alarm-item ${lv}" data-id="${esc(s.id)}">
       <span class="ai-mark" aria-hidden="true"></span>
-      <span class="ai-body"><b>${esc(codeName(s.code))}</b><small>${esc(s.name)} · #${esc(s.no)} · ${esc(code)}</small></span>
+      <span class="ai-body"><b>${esc(attentionText(s))}</b><small>${esc(s.name)} · #${esc(s.no)} · ${esc(code)}</small></span>
       <span class="ai-dur dur" data-since="${s.since}">${fmtDur(state.now - s.since)}</span>
     </button>`;
   }).join("");
@@ -526,7 +533,8 @@ function fmtBeat(sec) {
 function renderBeatSection(s, now) {
   const stats = beatStats(s, now);
   const cyc = cycleBeat(s, now);
-  const cur = s.known ? (stats.find((x) => x.code === s.code) || null) : null;
+  const curCode = s.action ?? s.code;
+  const cur = s.known ? (stats.find((x) => x.code === curCode) || null) : null;
   const flowLen = actionFlow(s.type).length;
   const summary = `
     <div class="beat-summary">
@@ -535,7 +543,7 @@ function renderBeatSection(s, now) {
       <div><b>${cyc ? fmtDur(cyc.avg) : "—"}</b><span>周期近均${cyc ? ` · ${cyc.n}次` : ""}</span></div>
     </div>`;
   const rows = stats.map((g, i) => {
-    const curCls = g.code === s.code ? "cur" : "";
+    const curCls = g.code === curCode ? "cur" : "";
     const extraCls = i >= flowLen ? "extra" : "";
     return `<tr class="${curCls} ${extraCls}">
       <td class="bn">${esc(g.code)}</td>
@@ -580,7 +588,10 @@ function renderDrawer() {
     if (s.code === null) stepText = codeName(null);
     else {
       stepText = codeName(s.action ?? s.code);
-      if (s.fault) stepText += ` · 异常 ${s.fault} ${codeName(s.fault)}`;
+      if (s.fault) {
+        stepText += ` · 异常 ${s.fault} ${codeName(s.fault)}`;
+        if (s.faultSince) stepText += ` ${fmtDur(ui.state.now - s.faultSince)}`;
+      }
     }
   }
   $("dHead").innerHTML = `
@@ -656,18 +667,26 @@ function render() {
   fillStationSelect();
 }
 
+let pollSeq = 0;
 let pollInFlight = false;
 
 async function poll() {
-  if (pollInFlight) return;
+  const seq = ++pollSeq;
+  while (pollInFlight) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (seq !== pollSeq) return;
+  }
+  if (seq !== pollSeq) return;
   pollInFlight = true;
   try {
-    ui.state = await api("GET", "/api/state");
+    const state = await api("GET", "/api/state");
+    if (seq !== pollSeq || view.switching) return;
+    ui.state = state;
     ui.clockOffset = ui.state.now - Date.now() / 1000;
     $("conn").hidden = true;
     render();
   } catch (_) {
-    $("conn").hidden = false;
+    if (seq === pollSeq) $("conn").hidden = false;
   } finally {
     pollInFlight = false;
   }
@@ -686,7 +705,7 @@ function tickDurations() {
     const beatEl = el.querySelector(".beat");
     if (!s || !beatEl || !s.known) return;
     const curSec = now - s.since;
-    const avg = avgForCode(s, s.code, now);
+    const avg = avgForCode(s, s.action ?? s.code, now);
     const cyc = cycleBeat(s, now);
     let beatText = `本步 <b>${fmtDur(curSec)}</b>`;
     if (avg !== null && avg > 0) beatText += ` · 该动作近均 ${fmtDur(avg)}`;

@@ -38,14 +38,31 @@ const ui = {
 
 const serverNow = () => Date.now() / 1000 + ui.clockOffset;
 
-/* 等级：报警/停止状态/暂停优先；否则跟动作码 */
+/* 等级：动作码、异常码、暂停/停止触点取更严重的一档。未知码在页面上按过程异常显示。 */
+const LEVEL_RANK = { ok: 0, unknown: 1, warn: 2, stop: 3 };
+
+function worseLevel(a, b) {
+  return (LEVEL_RANK[a] || 0) >= (LEVEL_RANK[b] || 0) ? a : b;
+}
+
 function viewLevel(s) {
   if (!s.known) return "pending";
   if (s.code === null) return "offline";
-  if (s.alarmed || s.stopped) return "stop";
-  if (s.paused) return "warn";
-  const lv = levelOf(s.action ?? s.code);
+  let lv = levelOf(s.action ?? s.code);
+  if (s.fault) lv = worseLevel(lv, levelOf(s.fault));
+  if (s.paused) lv = worseLevel(lv, "warn");
+  if (s.alarmed || s.stopped) lv = worseLevel(lv, "stop");
   return lv === "unknown" ? "warn" : lv;
+}
+
+function attentionText(s) {
+  if (!s.known) return "连接中";
+  if (s.code === null) return codeName(null);
+  if (s.alarmed) return "报警";
+  if (s.fault) return codeName(s.fault);
+  if (s.stopped) return "已停止";
+  if (s.paused) return "已暂停";
+  return codeName(s.action ?? s.code);
 }
 
 /* 内容没变就不重写 DOM，避免每秒刷新打断悬停、焦点和文字选择 */

@@ -191,6 +191,27 @@ def _modbus(raw):
     return {**m, "coils": coils, "command_values": {c: values[c] for c in COMMANDS}}
 
 
+def _beats(raw):
+    """config.json 的 _beats：本线动作码顺序。缺省时前端用内置工位流程。"""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ConfigError("_beats 必须是数组")
+    codes, seen = [], set()
+    for i, item in enumerate(raw, start=1):
+        if _is_int(item):
+            code = item
+        elif isinstance(item, dict) and _is_int(item.get("code")):
+            code = item["code"]
+        else:
+            raise ConfigError("_beats 第 %d 项必须带整数 code" % i)
+        _int_in(code, 0, 65535, "_beats 第 %d 项的 code" % i)
+        if code not in seen:
+            seen.add(code)
+            codes.append(code)
+    return codes
+
+
 def validate(raw):
     """校验并返回规范化后的新配置，不修改传入对象。"""
     if not isinstance(raw, dict):
@@ -213,6 +234,7 @@ def validate(raw):
         "control_pin": pin,
         "modbus": _modbus(raw.get("modbus")),
         "stations": _stations(raw.get("stations")),
+        "beats": _beats(raw.get("_beats")),
     }
 
 

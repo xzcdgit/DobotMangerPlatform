@@ -18,10 +18,16 @@ EVENTS_KEEP = 300
 ALERTS_KEEP = 300
 COMMAND_LABEL = {"reset": "复位", "start": "开始", "stop": "停止"}
 TEST = "sim"  # 测试模式对应的内部名称；真实模式为 modbus 或 report
+# 卡片取更严重的一档：动作码、异常码、暂停/停止触点可以同时存在
+_LEVEL_RANK = {"ok": 0, "unknown": 1, "warn": 2, "stop": 3}
+
+
+def _worse_level(*levels):
+    return max(levels, key=lambda lv: _LEVEL_RANK.get(lv, 0))
 
 
 def new_station(s):
-    return {**s, "code": None, "action": None, "fault": None, "known": False,
+    return {**s, "code": None, "action": None, "fault": None, "faultSince": None, "known": False,
             "since": time.time(), "lastSeen": None, "failures": 0,
             "stopped": False, "paused": False, "running": None, "alarmed": False,
             "history": deque(maxlen=HISTORY_PER_STATION)}
@@ -43,6 +49,7 @@ class Monitor:
         self._gen = 0  # 每次切换模式加一，旧线程发现代数变了就退出
         self.events = deque(maxlen=EVENTS_KEEP)
         self.alerts = deque(maxlen=ALERTS_KEEP)
+        self._io_locks = {}
         self.sim = None
         self.sim_factory = lambda mon: Sim(mon, mon.codes)
         self.stations = {s["id"]: new_station(s) for s in cfg["stations"]}
@@ -72,15 +79,25 @@ class Monitor:
             log.exception("保存运行模式失败：%s", self.mode_path)
 
     def _severity_level_code(self, st):
-        """卡片等级跟动作码；异常码只做告警/角标，不再用残留故障把整卡盖成停机。"""
+        """工艺步骤用动作码；还没有动作码时退回 code（上报模式只有 code）。"""
         action = st.get("action")
         if action is not None:
             return action
         return st.get("code")
 
+    def _status_level(self, st, code, fault_now):
+        """动作码与异常码取更严重的一档。code 为 None 表示离线，异常码不再单独盖住离线。"""
+        if code is None:
+            return "offline"
+        return _worse_level(
+            self.codes.level_of(self._severity_level_code(st)),
+            self.codes.level_of(fault_now) if fault_now else "ok",
+        )
+
     def record(self, st, code, now, action=None, fault=None):
         """记录一次读数；调用方须持有 lock。code 为 None 表示离线。
-        code/action 表示工艺状态；fault 表示异常，二者分寄存器，互不覆盖。"""
+        code/action 表示工艺状态；fault 表示异常，二者分寄存器，互不覆盖。
+        时间线上的等级跟异常码：出现时是停机/过程异常，清除时才是恢复，时长只算异常本身。"""
         was_known = st["known"]
         st["known"] = True
         if code is not None:
@@ -97,41 +114,55 @@ class Monitor:
             return
 
         prev, prev_since = st["code"], st["since"]
+        prev_fault_since = st.get("faultSince")
         if not status_same:
             st["code"], st["since"] = code, now
-            st["history"].append({"t": now, "code": code, "action": st.get("action"), "fault": st.get("fault")})
+            st["history"].append({"t": now, "code": code, "action": st.get("action"), "fault": fault_now or None})
+        if not fault_same:
+            st["faultSince"] = now if fault_now else None
 
-        level_code = self._severity_level_code(st)
-        level = self.codes.level_of(level_code if code is not None else None)
-        ev = {"t": now, "id": st["id"], "no": st["no"], "name": st["name"], "type": st["type"],
-              "from": prev if was_known else None, "code": code, "level": level,
-              "action": st.get("action"), "fault": st.get("fault")}
-        if not status_same or not fault_same:
-            self.events.append(ev)
-        # 告警：看异常码升降；无异常时看动作码等级
-        alert_code = fault_now if (not fault_same and fault_now) else (None if fault_same and status_same else level_code)
-        if alert_code is None and not fault_same and not fault_now and prev_fault:
-            # 异常清除
-            recovered = True
-            level = "ok"
-            alert_code = code
+        level = self._status_level(st, code, fault_now)
+        came_online = was_known and prev is None and code is not None
+        fault_raised = (not fault_same) and bool(fault_now) and code is not None and not came_online
+        fault_cleared = (not fault_same) and not fault_now and bool(prev_fault) and not came_online
+        if came_online:
+            alert_level, alert_code, alert_from = level, (fault_now or code), None
+            recovered = level == "ok"
+            dur_since, dur_prev = prev_since, None
+        elif fault_raised:
+            alert_level = self.codes.level_of(fault_now)
+            alert_code, alert_from = fault_now, (prev if was_known else None)
+            recovered, dur_since, dur_prev = False, None, prev
+        elif fault_cleared and level == "ok":
+            alert_level, alert_code, alert_from = "ok", code, prev_fault
+            recovered = was_known
+            dur_since = prev_fault_since if prev_fault_since is not None else prev_since
+            dur_prev = prev_fault
         else:
-            recovered = was_known and self.codes.level_of(prev_fault if prev_fault else prev) != "ok" and level == "ok"
-        if (not fault_same and (fault_now or prev_fault)) or ((not status_same) and (level != "ok" or recovered)):
-            if not fault_same and fault_now:
-                level = self.codes.level_of(fault_now)
-                alert_code = fault_now
-            self.alerts.append(ev)
-            entry = {"t": now, "kind": "recover" if recovered else "fault", "level": level,
-                     "no": st["no"], "name": st["name"], "ip": st["ip"], "port": st["port"],
-                     "code": alert_code, "text": self.codes.text_of(alert_code),
-                     "from": prev if was_known else None}
-            if recovered:
-                entry["prevSec"] = round(now - prev_since, 3)  # 秒，保留毫秒精度供前端 fmtDur
-                entry["detail"] = "此前 %s %s" % ("离线" if prev is None else prev, self.codes.text_of(prev))
-            if self.mode == TEST:
-                entry["test"] = True
-            self.logs.append(entry)
+            alert_level, alert_code, alert_from = level, code, (prev if was_known else None)
+            prev_level = self.codes.level_of(prev_fault if prev_fault else prev) if was_known else "ok"
+            recovered = was_known and prev_level != "ok" and level == "ok"
+            dur_since, dur_prev = prev_since, prev
+
+        ev = {"t": now, "id": st["id"], "no": st["no"], "name": st["name"], "type": st["type"],
+              "from": alert_from, "code": alert_code, "level": alert_level,
+              "action": st.get("action"), "fault": fault_now or None}
+        self.events.append(ev)
+        should_alert = fault_raised or (fault_cleared and recovered) or ((not status_same) and (alert_level != "ok" or recovered))
+        if not should_alert:
+            return
+        self.alerts.append(ev)
+        entry = {"t": now, "kind": "recover" if recovered else "fault", "level": alert_level,
+                 "no": st["no"], "name": st["name"], "ip": st["ip"], "port": st["port"],
+                 "code": alert_code, "text": self.codes.text_of(alert_code),
+                 "from": alert_from}
+        if recovered and dur_since is not None:
+            entry["prevSec"] = round(now - dur_since, 3)  # 秒，保留毫秒精度供前端 fmtDur
+            shown = "离线" if dur_prev is None else dur_prev
+            entry["detail"] = "此前 %s %s" % (shown, self.codes.text_of(None if dur_prev is None else dur_prev))
+        if self.mode == TEST:
+            entry["test"] = True
+        self.logs.append(entry)
 
     def _read_robot_bits(self, st, cfg):
         """读 map1 触点：停止(1)/暂停(2)/运行(3)/报警(4)。返回 (stopped, paused, running, alarmed)。"""
@@ -155,16 +186,26 @@ class Monitor:
         )
 
     def _display_level(self, st):
-        """页面等级：报警/停止状态/暂停触点优先；不用「运行」触点判停（Wait 时经常为0）。"""
+        """页面等级：异常码会把卡片加重；报警/停止触点同样算停机。不用「运行」触点判停。"""
         if st.get("code") is None:
             return "offline"
-        if st.get("alarmed"):
-            return "stop"
-        if st.get("stopped"):
-            return "stop"
+        levels = [self.codes.level_of(self._severity_level_code(st))]
+        fault = st.get("fault") or 0
+        if fault:
+            levels.append(self.codes.level_of(fault))
         if st.get("paused"):
-            return "warn"
-        return self.codes.level_of(self._severity_level_code(st))
+            levels.append("warn")
+        if st.get("alarmed") or st.get("stopped"):
+            levels.append("stop")
+        return _worse_level(*levels)
+
+    def _mark_offline(self, st, now):
+        """连续读失败后清掉触点锁存，避免掉线前的报警在重连失败时还把卡片染红。"""
+        st["running"] = None
+        st["stopped"] = False
+        st["paused"] = False
+        st["alarmed"] = False
+        self.record(st, None, now, action=None, fault=None)
 
     # ---------- Modbus 轮询 ----------
     def poll_loop(self, station_id, gen=None):
@@ -204,8 +245,7 @@ class Monitor:
                         return
                     st["failures"] += 1
                     if st["failures"] >= cfg["offline_after_failures"]:
-                        st["running"] = None
-                        self.record(st, None, time.time(), action=None, fault=None)
+                        self._mark_offline(st, time.time())
             except Exception:  # 单个站的意外错误不能让该站的轮询线程退出
                 log.exception("轮询工作站 %s 出错", station_id)
             time.sleep(self.cfg["poll_interval"])
@@ -252,27 +292,39 @@ class Monitor:
         return {"mode": self.mode, "changed": True}
 
     # ---------- 操作员命令 ----------
+    def _io_lock(self, station_id):
+        """同一工位的线圈脉冲串行执行，避免两台电脑把 OFF/ON 写插在一起。"""
+        with self.lock:
+            lk = self._io_locks.get(station_id)
+            if lk is None:
+                lk = threading.Lock()
+                self._io_locks[station_id] = lk
+            return lk
+
     def send_command(self, station_id, command, client):
         """下发复位/开始/停止并写操作日志。返回 {ok, detail}。"""
         if command not in COMMANDS:
             raise ValueError("命令只能是 reset、start、stop")
         if station_id not in self.stations:
             raise KeyError(station_id)
-        now = time.time()
-        with self.lock:
-            is_test = self.mode == TEST
-            st = self.stations[station_id]
+        with self._io_lock(station_id):
+            now = time.time()
+            with self.lock:
+                st = self.stations.get(station_id)
+                if st is None:
+                    raise KeyError(station_id)
+                is_test = self.mode == TEST
+                if is_test:
+                    ok, detail = True, self.sim.apply(st, command, now)
+            if not is_test:
+                ok, detail = self._write_command(st, command)  # 网络 I/O，不能持有全局锁
+            entry = {"t": now, "kind": "command", "command": command, "ok": ok, "no": st["no"],
+                     "name": st["name"], "ip": st["ip"], "port": st["port"], "client": client,
+                     "text": COMMAND_LABEL[command], "detail": detail}
             if is_test:
-                ok, detail = True, self.sim.apply(st, command, now)
-        if not is_test:
-            ok, detail = self._write_command(st, command)  # 网络 I/O，不能持有全局锁
-        entry = {"t": now, "kind": "command", "command": command, "ok": ok, "no": st["no"],
-                 "name": st["name"], "ip": st["ip"], "port": st["port"], "client": client,
-                 "text": COMMAND_LABEL[command], "detail": detail}
-        if is_test:
-            entry["test"] = True
-        self.logs.append(entry)
-        return {"ok": ok, "detail": detail}
+                entry["test"] = True
+            self.logs.append(entry)
+            return {"ok": ok, "detail": detail}
 
     def _can_control(self):
         mb = self.cfg["modbus"]
@@ -366,7 +418,7 @@ class Monitor:
             stations = [
                 {"id": s["id"], "no": s["no"], "name": s["name"], "ip": s["ip"], "port": s["port"],
                  "type": s["type"], "group": s.get("group", ""), "code": s["code"],
-                 "action": s.get("action"), "fault": s.get("fault"),
+                 "action": s.get("action"), "fault": s.get("fault"), "faultSince": s.get("faultSince"),
                  "level": self._display_level(s),
                  "since": s["since"], "lastSeen": s["lastSeen"],
                  "stopped": bool(s.get("stopped")), "paused": bool(s.get("paused")),
@@ -383,4 +435,5 @@ class Monitor:
                 "pollInterval": self.cfg["poll_interval"],
                 "actionRegister": self.cfg["modbus"]["action_register"],
                 "faultRegister": self.cfg["modbus"]["fault_register"],
+                "beats": list(self.cfg.get("beats") or []),
                 "stations": stations, "alerts": alerts}

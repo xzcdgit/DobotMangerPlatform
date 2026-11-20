@@ -232,6 +232,8 @@ class ConfigTest(unittest.TestCase):
         self.assertTrue(cfg["stations"][0]["ip"])
         self.assertEqual(cfg["modbus"]["action_register"], 4100)
         self.assertEqual(cfg["modbus"]["fault_register"], 4101)
+        self.assertIn(250, cfg["beats"])
+        self.assertLess(cfg["beats"].index(250), cfg["beats"].index(200))
         from codes import load as load_codes
         table = load_codes(server.HERE / "codes.json")
         self.assertIn("204", table["codes"])
@@ -239,6 +241,12 @@ class ConfigTest(unittest.TestCase):
 
     def test_busy_register_rejected(self):
         self.check({"stations": [station(1)], "modbus": {"action_register": 3811}}, "冲突")
+
+    def test_beats_keep_config_order(self):
+        cfg = config.validate({"stations": [station(1, type="上纸板")], "_beats": [
+            {"code": 250, "stage": "料仓托举"}, {"code": 250}, 204, {"code": 187},
+        ]})
+        self.assertEqual(cfg["beats"], [250, 204, 187])
 
     def test_legacy_status_register_maps_to_action(self):
         cfg = config.validate({"stations": [station(1)], "modbus": {"status_register": 4100}})
@@ -388,6 +396,48 @@ class MonitorTest(AppCase):
         self.assertEqual((stop["kind"], stop["code"], stop["no"]), ("fault", 917, 71))
         self.assertEqual((recover["kind"], recover["prevSec"]), ("recover", 30))
 
+    def test_fault_register_alerts_use_fault_duration(self):
+        """动作码不变时，4101 的故障不能被时间线当成恢复，时长只算故障本身。"""
+        now = time.time()
+        self.mon.record(self.st, 204, now, action=204, fault=0)
+        self.mon.record(self.st, 204, now + 5, action=204, fault=917)
+        row = next(s for s in self.mon.snapshot()["stations"] if s["id"] == "71")
+        self.assertEqual((row["level"], row["action"], row["fault"]), ("stop", 204, 917))
+        self.mon.record(self.st, 204, now + 12, action=204, fault=0)
+        self.assertEqual([e["level"] for e in self.mon.alerts], ["stop", "ok"])
+        self.assertEqual(self.mon.alerts[0]["code"], 917)
+        self.assertEqual((self.mon.alerts[1]["code"], self.mon.alerts[1]["from"]), (204, 917))
+        fault, recover = self.logs()[-2:]
+        self.assertEqual((fault["kind"], fault["code"], fault["level"]), ("fault", 917, "stop"))
+        self.assertEqual(recover["kind"], "recover")
+        self.assertEqual(recover["prevSec"], 7.0)
+        self.assertIn("917", recover["detail"])
+        cleared = next(s for s in self.mon.snapshot()["stations"] if s["id"] == "71")
+        self.assertEqual(cleared["level"], "ok")
+
+    def test_warn_fault_paints_card_without_hiding_action(self):
+        now = time.time()
+        self.mon.record(self.st, 204, now, action=204, fault=0)
+        self.mon.record(self.st, 204, now + 1, action=204, fault=816)
+        row = next(s for s in self.mon.snapshot()["stations"] if s["id"] == "71")
+        self.assertEqual(row["level"], "warn")
+        self.assertEqual(row["action"], 204)
+        self.assertEqual(self.mon.alerts[-1]["level"], "warn")
+
+    def test_offline_clears_latched_contacts(self):
+        self.st["stopped"] = True
+        self.st["paused"] = True
+        self.st["alarmed"] = True
+        self.st["running"] = True
+        self.mon.record(self.st, 204, time.time(), action=204, fault=0)
+        with self.mon.lock:
+            self.mon._mark_offline(self.st, time.time())
+        self.assertEqual(
+            (self.st["code"], self.st["stopped"], self.st["paused"], self.st["alarmed"], self.st["running"]),
+            (None, False, False, False, None),
+        )
+        self.assertEqual(self.mon._display_level(self.st), "offline")
+
     def test_first_reading_offline_is_logged(self):
         self.mon.record(self.st, None, time.time())
         self.assertEqual([e["level"] for e in self.logs()], ["offline"])
@@ -486,6 +536,24 @@ class ModbusCommandTest(AppCase):
         r = app.monitor.send_command("1", "reset", "c")
         self.assertFalse(r["ok"])
         self.assertIn("失败", r["detail"])
+
+    def test_commands_to_same_station_do_not_interleave(self):
+        app, _ = self.make_with_fake()
+        order = []
+
+        def slow_pulse(*args, **kwargs):
+            order.append("begin")
+            time.sleep(0.05)
+            order.append("end")
+
+        with mock.patch.object(modbus, "pulse_coil", slow_pulse):
+            threads = [threading.Thread(target=app.monitor.send_command, args=("1", cmd, "c"))
+                       for cmd in ("start", "stop")]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(order, ["begin", "end", "begin", "end"])
 
     def test_coil_write_does_not_hold_global_lock(self):
         app, _ = self.make_with_fake()
