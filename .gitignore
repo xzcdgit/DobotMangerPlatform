@@ -1,0 +1,22 @@
+# 运行时与缓存
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+data/
+*.log
+
+# 便携发布包（体积大，可本地 pack_release.py 再生成）
+发布/
+
+# 本地解压/临时
+_dobot_manual_extract/
+runtime/
+.cursor/
+.vscode/
+*.zip
+
+# 系统
+Thumbs.db
+Desktop.ini
+.DS_Store

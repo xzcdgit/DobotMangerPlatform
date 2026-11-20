@@ -1,0 +1,126 @@
+{
+  "_说明": "测试线：软管泡罩 · 上纸板。用法：复制本文件覆盖根目录 config.json 后重启。电脑需在 192.168.15.x。",
+  "_status_layers": "①控制器运行/停止/暂停/报警：读 modbus.*_status_addr 触点，脚本写不了。②工艺动作/自定义异常：读 action_register/fault_register（脚本写入）。",
+  "_beats说明": "脚本写入 4100 的动作节点（料仓DI检测不单独报码，并进抓取说明）。",
+  "_beats": [
+    {
+      "code": 101,
+      "stage": "PLC连接"
+    },
+    {
+      "code": 104,
+      "stage": "安全回原"
+    },
+    {
+      "code": 110,
+      "stage": "程序号校验"
+    },
+    {
+      "code": 112,
+      "stage": "初始化握手"
+    },
+    {
+      "code": 113,
+      "stage": "等待周期启动"
+    },
+    {
+      "code": 250,
+      "stage": "料仓托举"
+    },
+    {
+      "code": 251,
+      "stage": "人工补料"
+    },
+    {
+      "code": 200,
+      "stage": "去抓取上方"
+    },
+    {
+      "code": 204,
+      "stage": "下降抓取"
+    },
+    {
+      "code": 205,
+      "stage": "真空确认"
+    },
+    {
+      "code": 206,
+      "stage": "取料抬起"
+    },
+    {
+      "code": 210,
+      "stage": "去过渡点"
+    },
+    {
+      "code": 252,
+      "stage": "去放料上方"
+    },
+    {
+      "code": 181,
+      "stage": "放料上方等动子"
+    },
+    {
+      "code": 212,
+      "stage": "下降放料"
+    },
+    {
+      "code": 213,
+      "stage": "松开"
+    },
+    {
+      "code": 184,
+      "stage": "放行动子"
+    },
+    {
+      "code": 187,
+      "stage": "周期完成"
+    }
+  ],
+  "port": 8080,
+  "mode": "modbus",
+  "poll_interval": 0.05,
+  "control_pin": "",
+  "modbus": {
+    "action_register": 4100,
+    "fault_register": 4101,
+    "register_type": "holding",
+    "slave_id": 1,
+    "timeout": 1.0,
+    "offline_after_failures": 3,
+    "command_mode": "dobot",
+    "coil_pulse_ms": 200,
+    "coil_gap_ms": 200,
+    "disable_settle_ms": 3000,
+    "enable_settle_ms": 5000,
+    "enable_status_addr": 7,
+    "enable_timeout_ms": 30000,
+    "enable_poll_ms": 250,
+    "coils": {
+      "start": 0,
+      "stop": 1,
+      "enable": 3,
+      "disable": 4,
+      "clear_alarm": 5
+    },
+    "command_register": null,
+    "command_values": {
+      "reset": 1,
+      "start": 2,
+      "stop": 3
+    },
+    "stop_status_addr": 1,
+    "paused_status_addr": 2,
+    "running_status_addr": 3,
+    "alarm_status_addr": 4
+  },
+  "stations": [
+    {
+      "no": 24,
+      "name": "上纸板",
+      "ip": "192.168.15.24",
+      "port": 502,
+      "type": "上纸板",
+      "group": "软管泡罩"
+    }
+  ]
+}

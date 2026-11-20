@@ -1,0 +1,74 @@
+{
+  "_说明": "正式产线：上内胆 + 上卡圈。用法：复制本文件覆盖根目录 config.json 后重启。监控寄存器与业务寄存器分离，勿让 action/fault 占用 EAP 地址。",
+  "port": 8080,
+  "mode": "modbus",
+  "poll_interval": 0.05,
+  "control_pin": "",
+  "modbus": {
+    "action_register": 4100,
+    "fault_register": 4101,
+    "register_type": "holding",
+    "slave_id": 1,
+    "timeout": 1.0,
+    "offline_after_failures": 3,
+    "command_mode": "dobot",
+    "coil_pulse_ms": 200,
+    "coil_gap_ms": 200,
+    "disable_settle_ms": 3000,
+    "enable_settle_ms": 5000,
+    "enable_status_addr": 7,
+    "enable_timeout_ms": 30000,
+    "enable_poll_ms": 250,
+    "coils": {
+      "start": 0,
+      "stop": 1,
+      "enable": 3,
+      "disable": 4,
+      "clear_alarm": 5
+    },
+    "command_register": null,
+    "command_values": {
+      "reset": 1,
+      "start": 2,
+      "stop": 3
+    },
+    "stop_status_addr": 1,
+    "paused_status_addr": 2,
+    "running_status_addr": 3,
+    "alarm_status_addr": 4
+  },
+  "stations": [
+    {
+      "no": 73,
+      "name": "上内胆1",
+      "ip": "192.168.5.73",
+      "port": 502,
+      "type": "上料臂",
+      "group": "上内胆"
+    },
+    {
+      "no": 71,
+      "name": "上内胆2",
+      "ip": "192.168.5.71",
+      "port": 502,
+      "type": "上料臂",
+      "group": "上内胆"
+    },
+    {
+      "no": 81,
+      "name": "上卡圈1",
+      "ip": "192.168.5.81",
+      "port": 502,
+      "type": "上料臂",
+      "group": "上卡圈"
+    },
+    {
+      "no": 80,
+      "name": "上卡圈2",
+      "ip": "192.168.5.80",
+      "port": 502,
+      "type": "上料臂",
+      "group": "上卡圈"
+    }
+  ]
+}

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>美国线 · 工作站状态监控</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>工作站状态监控</h1>
+        <p>美国线 · 花间颂</p>
+      </div>
+    </div>
+
+    <nav class="tabs" role="tablist" aria-label="页面">
+      <button role="tab" aria-selected="true" data-view="overview">总览</button>
+      <button role="tab" aria-selected="false" data-view="logs">日志</button>
+      <button role="tab" aria-selected="false" data-view="messages">留言<i class="dot" id="msgDot" hidden></i></button>
+      <button role="tab" aria-selected="false" data-view="codes">状态码表</button>
+    </nav>
+
+    <div class="tools">
+      <div class="host" id="host" tabindex="0" role="button" aria-label="本机 IP，点击复制">
+        <span class="host-k">本机 IP</span>
+        <b class="host-v" id="hostIp">检测中…</b>
+        <span class="host-more" id="hostMore" hidden></span>
+        <div class="host-pop" role="tooltip">
+          <p>运行本软件的电脑，即 Modbus TCP 主站。点击复制。</p>
+          <ul id="hostList" hidden></ul>
+          <p class="host-hint" id="hostHint"></p>
+        </div>
+      </div>
+      <button class="modesw" id="mode" role="switch" aria-checked="false" title="切换测试模式 / 真实模式">
+        <span class="modesw-track" aria-hidden="true"><i></i></span>
+        <span class="modesw-text"><b id="modeName">真实模式</b><small id="modeSub"></small></span>
+      </button>
+      <button class="ghost" id="sound" aria-pressed="false" title="出现新的停机时蜂鸣提醒">声音 关</button>
+      <div class="sample" id="sampleRate" title="Modbus 轮询来自 config.json 的 poll_interval；页面刷新固定约 1 秒">采样 …</div>
+      <time id="clock"></time>
+    </div>
+  </header>
+
+  <div id="conn" class="conn" hidden>与监控服务失去连接，正在重试…</div>
+  <div id="testBanner" class="test-banner" hidden>
+    <span><b>测试模式</b>当前为虚拟模拟数据，操作不会下发到设备。</span>
+    <button class="btn" id="testBannerBtn">切换到真实模式</button>
+  </div>
+
+  <main id="view-overview" class="view shell">
+    <section class="kpi" aria-label="产线状态">
+      <button type="button" class="kpi-cell" data-level="all" aria-pressed="true">
+        <span class="kpi-n" id="kpiAll">0</span>
+        <span class="kpi-l">工位</span>
+      </button>
+      <button type="button" class="kpi-cell stop" data-level="stop" aria-pressed="false">
+        <span class="kpi-n" id="kpiStop">0</span>
+        <span class="kpi-l">停机</span>
+      </button>
+      <button type="button" class="kpi-cell warn" data-level="warn" aria-pressed="false">
+        <span class="kpi-n" id="kpiWarn">0</span>
+        <span class="kpi-l">过程异常</span>
+      </button>
+      <button type="button" class="kpi-cell offline" data-level="offline" aria-pressed="false">
+        <span class="kpi-n" id="kpiOff">0</span>
+        <span class="kpi-l">离线</span>
+      </button>
+      <button type="button" class="kpi-cell ok" data-level="ok" aria-pressed="false">
+        <span class="kpi-n" id="kpiOk">0</span>
+        <span class="kpi-l">运行</span>
+      </button>
+      <div class="kpi-meter" aria-hidden="true">
+        <div class="kpi-bar" id="health"></div>
+        <span id="healthText">—</span>
+      </div>
+      <div class="kpi-tools">
+        <div class="seg" id="levelFilter" role="group" aria-label="按状态筛选">
+          <button data-level="all" aria-pressed="true">全部</button>
+          <button data-level="attention" aria-pressed="false">告警</button>
+          <button data-level="stop" aria-pressed="false">停机</button>
+          <button data-level="warn" aria-pressed="false">过程异常</button>
+          <button data-level="offline" aria-pressed="false">离线</button>
+        </div>
+        <input id="search" type="search" placeholder="站名 / 序号 / IP / 码" aria-label="搜索">
+      </div>
+    </section>
+
+    <section class="board-wrap">
+      <div id="fleet" class="board" aria-label="工作站看板"></div>
+    </section>
+
+    <aside class="rail" aria-label="告警与事件">
+      <div class="rail-block">
+        <div class="rail-head">
+          <h2>活动告警</h2>
+          <span class="rail-badge" id="activeCount">0</span>
+        </div>
+        <div id="activeList" class="alarm-list"></div>
+        <p id="activeEmpty" class="rail-ok">全部正常</p>
+      </div>
+      <div class="rail-block rail-events">
+        <div class="rail-head">
+          <h2>事件</h2>
+          <button class="ghost" id="clearAlerts" type="button">清空</button>
+        </div>
+        <ol id="alerts" class="event-list"></ol>
+        <p id="alertsEmpty" class="rail-ok">暂无事件</p>
+      </div>
+    </aside>
+  </main>
+
+  <main id="view-logs" class="view page" hidden>
+    <div class="page-head">
+      <h2>异常与停机日志</h2>
+      <p class="muted">自动记录异常、停机、离线、恢复、操作与模式切换。按天保存在 data/logs。</p>
+    </div>
+    <div class="filters">
+      <label class="field-inline">日期
+        <select id="logDate" aria-label="日期"></select>
+      </label>
+      <div class="seg" id="logKind" role="group" aria-label="日志类型">
+        <button data-kind="all" aria-pressed="true">全部</button>
+        <button data-kind="stop" aria-pressed="false">停机</button>
+        <button data-kind="warn" aria-pressed="false">过程异常</button>
+        <button data-kind="offline" aria-pressed="false">离线</button>
+        <button data-kind="recover" aria-pressed="false">恢复</button>
+        <button data-kind="command" aria-pressed="false">操作</button>
+        <button data-kind="mode" aria-pressed="false">模式</button>
+      </div>
+      <input id="logSearch" type="search" placeholder="搜索 站名 / 序号 / 状态码" aria-label="搜索日志">
+      <span id="logCount" class="muted"></span>
+      <a class="btn" id="logCsv" href="/api/logs.csv" download>导出 CSV</a>
+    </div>
+    <div class="table-wrap">
+      <table class="logtable">
+        <thead><tr><th>时间</th><th>类型</th><th>序号</th><th>站名</th><th>IP</th><th>状态码</th><th>说明</th></tr></thead>
+        <tbody id="logRows"></tbody>
+      </table>
+    </div>
+    <p id="logEmpty" class="empty" hidden>这一天没有符合条件的记录</p>
+  </main>
+
+  <main id="view-messages" class="view page narrow" hidden>
+    <div class="page-head">
+      <h2>留言</h2>
+      <p class="muted">交接班、设备情况、待办事项，所有打开本页面的人都能看到。</p>
+    </div>
+    <form id="msgForm" class="msg-form" autocomplete="off">
+      <div class="row">
+        <label>姓名<input id="msgAuthor" maxlength="20" required placeholder="你的名字"></label>
+        <label>关联工作站（可选）<select id="msgStation"><option value="">不关联</option></select></label>
+      </div>
+      <label>内容<textarea id="msgText" rows="4" maxlength="500" required placeholder="例如：71 号站夹爪有松动，下班前请检查"></textarea></label>
+      <div class="msg-actions">
+        <span class="muted" id="msgCount">0 / 500</span>
+        <button class="btn primary" type="submit" id="msgSubmit">发布留言</button>
+      </div>
+    </form>
+    <ol id="msgList" class="msg-list"></ol>
+    <p id="msgEmpty" class="empty" hidden>还没有留言</p>
+  </main>
+
+  <main id="view-codes" class="view page" hidden>
+    <div class="filters">
+      <select id="catFilter" aria-label="类别"></select>
+      <div class="seg" id="stopFilter" role="group" aria-label="是否停机">
+        <button data-stop="all" aria-pressed="true">全部</button>
+        <button data-stop="1" aria-pressed="false">只看停机</button>
+        <button data-stop="0" aria-pressed="false">不停机</button>
+      </div>
+      <input id="codeSearch" type="search" placeholder="搜索状态码 / 名称 / 原因" aria-label="搜索状态码">
+      <span id="codeCount" class="muted"></span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>状态码</th><th>类别</th><th>名称</th><th>什么时候报</th><th>随后怎么走</th><th>适用工位</th></tr></thead>
+        <tbody id="codeRows"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<aside id="drawer" class="drawer" aria-hidden="true">
+  <div class="drawer-scrim" id="scrim"></div>
+  <div class="drawer-panel" role="dialog" aria-label="工作站详情">
+    <button class="close" id="closeDrawer" aria-label="关闭">×</button>
+    <div id="drawerBody"></div>
+  </div>
+</aside>
+
+<dialog id="dlg">
+  <form method="dialog">
+    <h3 id="dlgTitle"></h3>
+    <p id="dlgText"></p>
+    <label id="dlgPinRow" class="pin-row" hidden>操作密码<input id="dlgPin" type="password" autocomplete="off"></label>
+    <div class="dlg-actions">
+      <button class="btn primary" id="dlgOk" value="ok">确定</button>
+      <button class="btn" value="cancel" formnovalidate>取消</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="common.js"></script>
+<script src="pages.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
