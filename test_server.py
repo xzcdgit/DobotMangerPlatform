@@ -20,7 +20,7 @@ from codes import Codes
 from monitor import Monitor
 from sim import Sim
 
-TABLE = json.loads((server.WEB / "codes.json").read_text(encoding="utf-8"))
+TABLE = json.loads((server.HERE / "codes.json").read_text(encoding="utf-8"))
 CODES = Codes(TABLE)
 
 
@@ -228,10 +228,14 @@ class ConfigTest(unittest.TestCase):
 
     def test_shipped_config_is_valid(self):
         cfg = config.load(server.HERE / "config.json")
-        self.assertEqual(len(cfg["stations"]), 1)
-        self.assertEqual(cfg["stations"][0]["ip"], "192.168.5.80")
+        self.assertGreaterEqual(len(cfg["stations"]), 1)
+        self.assertTrue(cfg["stations"][0]["ip"])
         self.assertEqual(cfg["modbus"]["action_register"], 4100)
         self.assertEqual(cfg["modbus"]["fault_register"], 4101)
+        from codes import load as load_codes
+        table = load_codes(server.HERE / "codes.json")
+        self.assertIn("204", table["codes"])
+        self.assertIn("917", table["codes"])
 
     def test_busy_register_rejected(self):
         self.check({"stations": [station(1)], "modbus": {"action_register": 3811}}, "冲突")

@@ -15,11 +15,11 @@
 
 在本机执行 `python pack_release.py`，会在 `发布/` 生成**便携版** zip（内置官方嵌入式 Python，目标机一般不用再装 Python）。解压后双击 `start.bat`，说明见包内 `部署说明.txt`。
 
-## 配置文件（换线只改配置，不改代码）
+## 配置文件（换线 / 加码只改配置，不改代码）
 
-- 根目录 `config.json`：**当前生效**配置，启动时只读这一份。
-- `configs/`：各产线完整配置（如 `软管泡罩-上纸板.json`、`上内胆卡圈.json`）。换线把对应文件复制覆盖 `config.json` 后重启即可。
-- 动作码名称沿用通用 `web/codes.json`，不必改上位机 Python/前端。
+- 根目录 `config.json`：**当前生效**运行配置（工作站、端口、Modbus），启动时只读这一份。
+- 根目录 `codes.json`：**状态码对照表**（独立配置）。新增/改名/停用码只改这个文件，重启软件即可，不必改 Python 或前端。
+- `configs/`：各产线完整运行配置（如 `软管泡罩-上纸板.json`）。换线把对应文件复制覆盖 `config.json` 后重启即可。
 
 ```json
 {
@@ -44,6 +44,19 @@
   ]
 }
 ```
+
+### 状态码表 codes.json
+
+与 `config.json` 平级，专管码名、颜色等级和按工位筛选。**加新动作/异常码：只改 `codes.json`，保存后重启。**
+
+| 字段 | 说明 |
+|---|---|
+| `codes` | 码号 → `{ category, name, when, next, stop, stations, source }`。`stop: true` 显示停机红；`category` 为「过程异常」显示黄；其它为正常绿 |
+| `stationCodes` | 工位类型 → 常用码列表（页面筛选 / 测试模式抽样池）；引用的码必须已在 `codes` 里 |
+| `retired` | 停用码 → `{ use, reason }`，页面提示改用哪个码 |
+| `_说明` | 备注，程序忽略 |
+
+也可从 Excel 重新生成：`python gen_codes.py`（覆盖写入 `codes.json`）。
 
 ### 工作站 stations
 
@@ -126,5 +139,5 @@
 - 默认清单里的站名取自 `eapconfig.xml`，IP 按 192.168.5.序号 推测。74 在 EAP 里没有对应条目，名称是临时写的；72 在 EAP 里是“产品异常处理 / 双工位夹爪Seg”，状态码表把它归入气垫取放。请按现场核对。
 - 任何一台电脑都能打开页面并下发指令，而服务监听在 0.0.0.0。现场使用建议设置 `control_pin`，并只在受控的局域网内运行。
 - 也可以主动上报：`curl -X POST localhost:8080/api/report -H "Content-Type: application/json" -d "{\"id\":\"71\",\"code\":917}"`，`id` 是序号，`code` 传 `null` 表示离线。
-- 状态码表更新后运行 `python gen_codes.py` 重新生成 `web/codes.json`（需要 `openpyxl`）。
+- 状态码表也可从 Excel 更新：运行 `python gen_codes.py` 覆盖根目录 `codes.json`（需要 `openpyxl`）；手工改 `codes.json` 后重启即可。
 - 测试：`python -m unittest test_server -v`

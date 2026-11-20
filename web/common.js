@@ -72,11 +72,13 @@ function codeName(code) {
   return r ? `已停用，改用 ${r.use}` : "表中无此状态码";
 }
 
+/* 动作计时以毫秒为单位；满 1 分钟起用分/时，避免超长数字 */
 function fmtDur(sec) {
-  sec = Math.max(0, Math.floor(sec));
-  if (sec < 60) return `${sec}s`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
-  return `${Math.floor(sec / 3600)}h${String(Math.floor((sec % 3600) / 60)).padStart(2, "0")}m`;
+  const ms = Math.max(0, Math.round(Number(sec) * 1000));
+  if (ms < 60_000) return `${ms}ms`;
+  const s = Math.floor(ms / 1000);
+  if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
 }
 
 const pad2 = (n) => String(n).padStart(2, "0");

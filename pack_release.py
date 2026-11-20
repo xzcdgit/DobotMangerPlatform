@@ -26,6 +26,7 @@ INCLUDE_FILES = [
     "config.py",
     "config.json",
     "codes.py",
+    "codes.json",
     "hostinfo.py",
     "modbus.py",
     "monitor.py",
@@ -57,7 +58,8 @@ DEPLOY_TXT = f"""机器人可视化平台 — 便携部署说明
 三、目录说明
   start.bat     启动（优先用自带 runtime\\python.exe）
   runtime\\      内置 Python，请勿删除
-  config.json   当前生效配置
+  config.json   当前生效配置（工作站/端口/Modbus）
+  codes.json    状态码对照表（增删改后重启即可，不必改源码）
   configs\\      各产线配置（复制覆盖 config.json 即换线）
   web\\          网页前端
   工程\\         机器人 Lua 备份

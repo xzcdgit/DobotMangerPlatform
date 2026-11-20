@@ -127,7 +127,7 @@ class Monitor:
                      "code": alert_code, "text": self.codes.text_of(alert_code),
                      "from": prev if was_known else None}
             if recovered:
-                entry["prevSec"] = round(now - prev_since)
+                entry["prevSec"] = round(now - prev_since, 3)  # 秒，保留毫秒精度供前端 fmtDur
                 entry["detail"] = "此前 %s %s" % ("离线" if prev is None else prev, self.codes.text_of(prev))
             if self.mode == TEST:
                 entry["test"] = True

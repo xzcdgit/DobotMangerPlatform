@@ -679,7 +679,7 @@ function tickDurations() {
   document.querySelectorAll(".dur[data-since]").forEach((el) => {
     el.textContent = fmtDur(now - Number(el.dataset.since));
   });
-  /* 卡片上的「本步」时长每秒刷新，避免等下一轮 poll */
+  /* 卡片「本步」时长按 ms 刷新，不必等下一轮 poll */
   const byId = new Map(ui.state.stations.map((s) => [s.id, s]));
   document.querySelectorAll(".card[data-id]").forEach((el) => {
     const s = byId.get(el.dataset.id);
@@ -752,7 +752,7 @@ function bind() {
 }
 
 async function init() {
-  const t = await (await fetch("codes.json", { cache: "no-store" })).json();
+  const t = await (await fetch("/api/codes", { cache: "no-store" })).json();
   ui.codes = t.codes;
   ui.stationCodes = t.stationCodes;
   ui.retired = t.retired;
@@ -761,7 +761,7 @@ async function init() {
   await poll();
   pollMessages();
   setInterval(poll, POLL_MS);
-  setInterval(tickDurations, 1000);
+  setInterval(tickDurations, 100); /* 动作计时按 ms 显示，100ms 刷新一次 */
   setInterval(pollMessages, 8000);
   setInterval(refreshLogsIfOpen, 5000);
 }

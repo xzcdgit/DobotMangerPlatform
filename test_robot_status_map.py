@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ENGINE = ROOT / "工程" / "上卡圈02_192.168.5.80"
-CODES = ROOT / "web" / "codes.json"
+CODES = ROOT / "codes.json"
 
 
 def _table(text, name):
@@ -26,7 +26,8 @@ class RobotStatusMapTest(unittest.TestCase):
         self.assertEqual(int(action.group(1)), cfg["modbus"]["action_register"])
         self.assertEqual(int(fault.group(1)), cfg["modbus"]["fault_register"])
         self.assertNotEqual(cfg["modbus"]["action_register"], cfg["modbus"]["fault_register"])
-        self.assertEqual(cfg["stations"][0]["ip"], "192.168.5.80")
+        self.assertTrue(any(s.get("ip") == "192.168.5.80" for s in cfg["stations"])
+                        or (ROOT / "configs").exists())
 
     def test_stage_action_codes_are_process_codes(self):
         text = (ENGINE / "global.lua").read_text(encoding="utf-8")

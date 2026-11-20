@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import config as config_mod
-from codes import Codes
+from codes import Codes, CodesError, load as load_codes
 from hostinfo import HostInfo
 from monitor import Monitor
 from sim import Sim
@@ -27,6 +27,7 @@ from store import LogStore, MessageStore, day_of, parse_day, to_csv
 
 HERE = Path(__file__).resolve().parent
 WEB = HERE / "web"
+CODES_PATH = HERE / "codes.json"
 MAX_BODY = 8192
 REQUEST_TIMEOUT = 10
 MAX_CODE = 65535
@@ -119,12 +120,16 @@ def make_handler(app):
             path = urlsplit(self.path).path
             if not path.startswith("/api/"):
                 return super().do_GET()
-            self._dispatch({"/api/state": self._state, "/api/logs": self._logs,
-                            "/api/logs.csv": self._logs_csv, "/api/messages": self._messages})
+            self._dispatch({"/api/state": self._state, "/api/codes": self._codes,
+                            "/api/logs": self._logs, "/api/logs.csv": self._logs_csv,
+                            "/api/messages": self._messages})
 
         def _state(self, _):
             app.monitor.host.note_request_ip(self.connection.getsockname()[0])
             self._json(app.monitor.snapshot())
+
+        def _codes(self, _):
+            self._json(app.monitor.codes.raw)
 
         def _query_logs(self):
             q = parse_qs(urlsplit(self.path).query)
@@ -225,9 +230,9 @@ def make_handler(app):
     return Handler
 
 
-def build_app(config_path=None, data_dir=None):
+def build_app(config_path=None, codes_path=None, data_dir=None):
     cfg = config_mod.load(config_path or HERE / "config.json")
-    table = json.loads((WEB / "codes.json").read_text(encoding="utf-8"))
+    table = load_codes(codes_path or CODES_PATH)
     data = Path(data_dir or HERE / "data")
     host = HostInfo(s["ip"] for s in cfg["stations"])
     return App(cfg, Codes(table), LogStore(data / "logs"), MessageStore(data / "messages.json"), host,
@@ -238,7 +243,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         app = build_app()
-    except (config_mod.ConfigError, OSError) as e:
+    except (config_mod.ConfigError, CodesError, OSError) as e:
         print("配置文件有误，无法启动：\n  %s" % e, file=sys.stderr)
         sys.exit(1)
     app.monitor.start(lambda mon: Sim(mon, mon.codes))

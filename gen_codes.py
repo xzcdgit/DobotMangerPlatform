@@ -1,4 +1,4 @@
-"""从 美国线状态码对照表.xlsx 生成 web/codes.json。表更新后重新运行即可。"""
+"""从 美国线状态码对照表.xlsx 生成根目录 codes.json。表更新后重新运行即可。"""
 import json
 import sys
 from pathlib import Path
@@ -7,7 +7,7 @@ import openpyxl
 
 HERE = Path(__file__).resolve().parent
 XLSX = HERE.parent / "美国线状态码对照表.xlsx"
-OUT = HERE / "web" / "codes.json"
+OUT = HERE / "codes.json"
 
 
 def main() -> None:
@@ -40,7 +40,12 @@ def main() -> None:
 
     OUT.write_text(
         json.dumps(
-            {"codes": codes, "stationCodes": station_codes, "retired": retired},
+            {
+                "_说明": "状态码对照表（独立配置）。增删改本文件后重启软件即可生效，不必改源码。",
+                "codes": codes,
+                "stationCodes": station_codes,
+                "retired": retired,
+            },
             ensure_ascii=False,
             indent=1,
         ),

@@ -1,4 +1,5 @@
 {
+ "_说明": "状态码对照表（独立配置）。增删改本文件后重启软件即可生效，不必改 Python/前端源码。字段：codes=码定义；stationCodes=各工位类型常用码（模拟与筛选）；retired=停用码。单条码：category/name/when/next/stop/stations/source；stop=true 为停机红；category=过程异常 为黄。",
  "codes": {
   "100": {
    "category": "启动",
