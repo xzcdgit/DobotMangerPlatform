@@ -189,7 +189,7 @@ function cardShell(s) {
   </button>`;
 }
 
-/* ---------- 节拍：按工位固定动作顺序统计（与 sim.py 流程一致，顺序不随频次跳动） ---------- */
+/* ---------- 节拍：按工位固定动作顺序。只计已走完的步，典型值用中位数，偏长的圈不抬高节拍 ---------- */
 const FLOW_STARTUP = [100, 101, 104, 105, 110, 111, 112, 113, 114];
 const FLOW_BY_TYPE = {
   "上料臂": [180, 181, 182, 200, 201, 202, 204, 205, 206, 209, 210, 212, 213, 214, 220, 221, 223, 184, 185, 186, 187],
@@ -216,91 +216,208 @@ function actionFlow(type) {
   return out;
 }
 
-function stepSegments(station, now) {
+const STARTUP_CATS = new Set(["启动", "EAP初始化"]);
+
+function isStartupCode(code) {
+  if (code === null || code === undefined) return false;
+  const info = ui.codes[String(code)];
+  return Boolean(info && STARTUP_CATS.has(info.category));
+}
+
+function median(xs) {
+  const s = xs.slice().sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+/* 去掉把节拍抬高的长尾。少于 3 个样本时，只有「长的那次超过短的 3 倍且多出 5 秒」才丢掉。 */
+function trimLong(items, secOf) {
+  const pool = items.slice();
+  let guard = pool.length;
+  while (pool.length >= 2 && guard--) {
+    let hi = pool[0];
+    for (const item of pool) if (secOf(item) > secOf(hi)) hi = item;
+    const rest = pool.filter((item) => item !== hi);
+    const medRest = median(rest.map(secOf));
+    const hiSec = secOf(hi);
+    if (!(hiSec > medRest * 3 && hiSec - medRest > 5)) break;
+    pool.splice(pool.indexOf(hi), 1);
+  }
+  return pool;
+}
+
+function completedSegments(station) {
   const hist = station.history || [];
   const segs = [];
-  for (let i = 0; i < hist.length; i++) {
+  for (let i = 0; i < hist.length - 1; i++) {
     const a = hist[i];
-    const end = i + 1 < hist.length ? hist[i + 1].t : now;
-    segs.push({ code: a.code, t: a.t, sec: Math.max(0, end - a.t) });
+    const sec = hist[i + 1].t - a.t;
+    if (!(sec > 0)) continue;
+    segs.push({ code: a.code, t: a.t, end: hist[i + 1].t, sec, fault: Boolean(a.fault) });
   }
   return segs;
 }
 
-function beatRowFromSecs(code, secs) {
-  if (!secs.length) {
-    return { code, name: codeName(code), n: 0, last: null, avg: null, max: null, sum: 0 };
-  }
-  const sum = secs.reduce((a, b) => a + b, 0);
-  return {
-    code,
-    name: codeName(code),
-    n: secs.length,
-    last: secs[secs.length - 1],
-    avg: sum / secs.length,
-    max: Math.max(...secs),
-    sum,
-  };
-}
-
-function beatStats(station, now) {
-  const map = new Map();
-  for (const seg of stepSegments(station, now)) {
-    if (seg.code === null || seg.code === undefined) continue;
-    const key = String(seg.code);
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push(seg.sec);
-  }
-  const flow = actionFlow(station.type);
-  const inFlow = new Set(flow);
-  const rows = flow.map((code) => beatRowFromSecs(code, map.get(String(code)) || []));
-  /* 流程外出现过的码（多为异常）固定挂在末尾，按码值排序，避免打乱主流程 */
-  const extras = [...map.keys()]
-    .map(Number)
-    .filter((c) => !inFlow.has(c))
-    .sort((a, b) => a - b)
-    .map((code) => beatRowFromSecs(code, map.get(String(code)) || []));
-  return rows.concat(extras);
-}
-
-function cycleBeat(station, now) {
-  /* 用「周期完成 / 回到就绪」等标记码的出现间隔估整圈节拍 */
-  const segs = stepSegments(station, now).filter((s) => s.code !== null && s.code !== undefined);
-  const marks = segs.filter((s) => {
-    const name = codeName(s.code);
-    return name.includes("周期完成") || name.includes("回到就绪") || s.code === 187;
-  });
-  if (marks.length < 2) return null;
-  const byCode = new Map();
-  for (const m of marks) {
-    const k = String(m.code);
-    if (!byCode.has(k)) byCode.set(k, []);
-    byCode.get(k).push(m.t);
-  }
-  let intervals = [];
-  for (const ts of byCode.values()) {
-    if (ts.length < 2) continue;
-    const gs = [];
-    for (let i = 1; i < ts.length; i++) {
-      const g = ts[i] - ts[i - 1];
-      if (g > 0.5) gs.push(g);
+function faultWindows(station) {
+  const alerts = (ui.state && ui.state.alerts) || [];
+  const wins = [];
+  let open = null;
+  for (const e of alerts) {
+    if (e.id !== station.id) continue;
+    if (e.level === "stop" || e.level === "warn") {
+      if (open == null) open = e.t;
+    } else if (e.level === "ok" && open != null) {
+      wins.push([open, e.t]);
+      open = null;
     }
-    if (gs.length > intervals.length) intervals = gs;
   }
-  if (!intervals.length) return null;
-  const sum = intervals.reduce((a, b) => a + b, 0);
-  return {
-    n: intervals.length,
-    last: intervals[intervals.length - 1],
-    avg: sum / intervals.length,
-    min: Math.min(...intervals),
-    max: Math.max(...intervals),
-  };
+  if (open != null) wins.push([open, Infinity]);
+  return wins;
 }
 
-function avgForCode(station, code, now) {
+function overlapsFault(t0, t1, wins) {
+  return wins.some((w) => t0 < w[1] && t1 > w[0]);
+}
+
+function pointInFault(t, wins) {
+  return wins.some((w) => t >= w[0] && t < w[1]);
+}
+
+function cycleMarker(station, flow) {
+  const counts = new Map();
+  for (const h of station.history || []) {
+    if (h.code === null || h.code === undefined) continue;
+    const k = String(h.code);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  const pick = (pred) => {
+    let best = null;
+    for (const [k, n] of counts) {
+      if (n < 2 || !pred(Number(k))) continue;
+      if (!best || n > best.n) best = { code: Number(k), n };
+    }
+    return best;
+  };
+  const done = pick((c) => c === 187 || codeName(c) === "周期完成");
+  if (done) return { code: done.code, how: "周期完成" };
+  const ready = pick((c) => c === 186 || codeName(c) === "回到就绪");
+  if (ready) return { code: ready.code, how: "回到就绪" };
+  for (const c of flow) {
+    if (isStartupCode(c)) continue;
+    if ((counts.get(String(c)) || 0) >= 2) return { code: c, how: codeName(c) };
+  }
+  let best = null;
+  for (const [k, n] of counts) {
+    const code = Number(k);
+    if (n < 2 || isStartupCode(code)) continue;
+    if (!best || n > best.n) best = { code, n };
+  }
+  return best ? { code: best.code, how: codeName(best.code) } : null;
+}
+
+function analyzeBeats(station) {
+  const flow = actionFlow(station.type);
+  const wins = faultWindows(station);
+  const segs = completedSegments(station);
+  for (const seg of segs) {
+    seg.bad = seg.code === null || seg.code === undefined || seg.fault || overlapsFault(seg.t, seg.end, wins);
+  }
+  const byCode = new Map();
+  for (const seg of segs) {
+    if (seg.code === null || seg.code === undefined) continue;
+    const k = String(seg.code);
+    if (!byCode.has(k)) byCode.set(k, []);
+    byCode.get(k).push(seg);
+  }
+
+  const marker = cycleMarker(station, flow);
+  const cycles = [];
+  if (marker) {
+    const hist = station.history || [];
+    let prev = null;
+    let dirty = false;
+    for (const h of hist) {
+      if (h.code === null || h.code === undefined || h.fault || isStartupCode(h.code) || pointInFault(h.t, wins)) {
+        dirty = true;
+      }
+      if (h.code !== marker.code) continue;
+      if (prev != null) {
+        const sec = h.t - prev;
+        if (sec > 0.5) cycles.push({ sec, dirty, t: h.t });
+      }
+      prev = h.t;
+      dirty = Boolean(h.fault) || pointInFault(h.t, wins);
+    }
+  }
+  const clean = cycles.filter((c) => !c.dirty);
+  const base = clean.length ? clean : cycles;
+  const kept = trimLong(base, (c) => c.sec);
+  const last = cycles.length ? cycles[cycles.length - 1] : null;
+  const cyc = kept.length ? {
+    n: kept.length,
+    avg: median(kept.map((c) => c.sec)),
+    last: last ? last.sec : null,
+    lastKept: Boolean(last && kept.includes(last)),
+    lastDirty: Boolean(last && last.dirty),
+    dropped: cycles.length - kept.length,
+    how: marker.how,
+    max: Math.max(...cycles.map((c) => c.sec)),
+  } : null;
+
+  const rowOf = (code, kind) => {
+    const list = byCode.get(String(code)) || [];
+    const blank = { code, name: codeName(code), kind, n: 0, last: null, avg: null, max: null };
+    if (!list.length) return blank;
+    const good = list.filter((s) => !s.bad);
+    const pool = trimLong(good.length ? good : list, (s) => s.sec);
+    return {
+      code,
+      name: codeName(code),
+      kind,
+      n: list.length,
+      last: list[list.length - 1].sec,
+      avg: median(pool.map((s) => s.sec)),
+      max: Math.max(...list.map((s) => s.sec)),
+    };
+  };
+
+  const inFlow = new Set(flow);
+  const body = [];
+  const startup = [];
+  for (const code of flow) {
+    if (isStartupCode(code)) {
+      const row = rowOf(code, "startup");
+      if (row.n) startup.push(row);
+    } else {
+      body.push(rowOf(code, "body"));
+    }
+  }
+  const outside = [...byCode.keys()].map(Number).filter((c) => !inFlow.has(c)).sort((a, b) => a - b);
+  const startupExtra = outside.filter(isStartupCode).map((code) => rowOf(code, "startup"));
+  const extras = outside.filter((c) => !isStartupCode(c)).map((code) => rowOf(code, "extra"));
+  const rows = body.concat(startup, startupExtra, extras);
+  return { rows, cyc, byCode: new Map(rows.map((r) => [r.code, r])) };
+}
+
+function beatModel(station) {
+  const hist = station.history || [];
+  const last = hist.length ? hist[hist.length - 1].t : 0;
+  const alertN = ui.state && ui.state.alerts ? ui.state.alerts.length : 0;
+  const key = `${hist.length}:${last}:${alertN}:${station.type}`;
+  if (station._beatKey === key && station._beatModel) return station._beatModel;
+  const model = analyzeBeats(station);
+  station._beatKey = key;
+  station._beatModel = model;
+  return model;
+}
+
+function cycleBeat(station) {
+  return beatModel(station).cyc;
+}
+
+function avgForCode(station, code) {
   if (code === null || code === undefined) return null;
-  const g = beatStats(station, now).find((x) => x.code === code);
+  const g = beatModel(station).byCode.get(code);
   return g && g.n ? g.avg : null;
 }
 
@@ -346,8 +463,8 @@ function patchCard(el, s, now) {
   const paused = s.paused ? `<span class="tag">已暂停</span>` : "";
   const curSec = now - s.since;
   const beatCode = s.action ?? s.code;
-  const avg = s.known ? avgForCode(s, beatCode, now) : null;
-  const cyc = s.known ? cycleBeat(s, now) : null;
+  const avg = s.known ? avgForCode(s, beatCode) : null;
+  const cyc = s.known ? cycleBeat(s) : null;
 
   if (el.dataset.level !== lv) el.dataset.level = lv;
   const lvEl = el.querySelector(".lv");
@@ -361,9 +478,9 @@ function patchCard(el, s, now) {
   if (nameEl._html !== nameHtml) { nameEl._html = nameHtml; nameEl.innerHTML = nameHtml; }
   if (stepEl.textContent !== step) stepEl.textContent = step;
 
-  let beatText = s.known ? `本步 <b>${fmtDur(curSec)}</b>` : "本步 —";
-  if (avg !== null && avg > 0) beatText += ` · 该动作近均 ${fmtDur(avg)}`;
-  if (cyc) beatText += ` · 周期近均 ${fmtDur(cyc.avg)}`;
+  let beatText = s.known ? `本步 <b>${fmtBeat(curSec)}</b>` : "本步 —";
+  if (avg !== null && avg > 0) beatText += ` · 典型 ${fmtBeat(avg)}`;
+  if (cyc) beatText += ` · 节拍 ${fmtBeat(cyc.avg)}`;
   if (beatEl && beatEl._html !== beatText) { beatEl._html = beatText; beatEl.innerHTML = beatText; }
 
   if (durEl) {
@@ -527,25 +644,56 @@ function syncControls() {
 }
 
 function fmtBeat(sec) {
-  return sec === null || sec === undefined ? "—" : fmtDur(sec);
+  if (sec === null || sec === undefined || !Number.isFinite(Number(sec))) return "—";
+  const ms = Math.max(0, Math.round(Number(sec) * 1000));
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) {
+    const s = ms / 1000;
+    return `${(s < 10 ? s.toFixed(2) : s.toFixed(1))}s`;
+  }
+  return fmtDur(sec);
+}
+
+function beatCaption(cyc) {
+  let text = "只统计已经走完的动作，正在进行的这一步不算。典型是中位数；停机、补料或空等太久的那一次不会把数字抬高。";
+  if (!cyc) return `${text}至少走完两圈才有节拍。`;
+  const how = cyc.how === "周期完成" ? "「周期完成」" : `「${cyc.how}」`;
+  text += `节拍是相邻两次${how}的间隔，取了 ${cyc.n} 圈。`;
+  if (cyc.last != null) {
+    text += cyc.lastKept
+      ? `最近一圈 ${fmtBeat(cyc.last)}。`
+      : `最近一圈 ${fmtBeat(cyc.last)}${cyc.lastDirty ? "（含故障、离线或启动）" : "（偏长）"}，没有算进节拍。`;
+  }
+  if (cyc.dropped > 1) text += `窗口里有 ${cyc.dropped} 圈没有算进节拍。`;
+  return text;
 }
 
 function renderBeatSection(s, now) {
-  const stats = beatStats(s, now);
-  const cyc = cycleBeat(s, now);
+  const model = beatModel(s);
+  const cyc = model.cyc;
   const curCode = s.action ?? s.code;
-  const cur = s.known ? (stats.find((x) => x.code === curCode) || null) : null;
-  const flowLen = actionFlow(s.type).length;
+  const cur = s.known ? (model.byCode.get(curCode) || null) : null;
   const summary = `
     <div class="beat-summary">
-      <div><b>${fmtDur(now - s.since)}</b><span>当前动作</span></div>
-      <div><b>${cur && cur.n ? fmtDur(cur.avg) : "—"}</b><span>该动作近均</span></div>
-      <div><b>${cyc ? fmtDur(cyc.avg) : "—"}</b><span>周期近均${cyc ? ` · ${cyc.n}次` : ""}</span></div>
+      <div><b>${fmtBeat(now - s.since)}</b><span>当前动作</span></div>
+      <div><b>${cur && cur.n ? fmtBeat(cur.avg) : "—"}</b><span>该步典型</span></div>
+      <div><b>${cyc ? fmtBeat(cyc.avg) : "—"}</b><span>常见节拍${cyc ? ` · ${cyc.n}圈` : ""}</span></div>
     </div>`;
-  const rows = stats.map((g, i) => {
+  let seenStartup = false;
+  let seenExtra = false;
+  const rows = model.rows.map((g) => {
+    let split = "";
+    if (g.kind === "startup" && !seenStartup) {
+      seenStartup = true;
+      split = `<tr class="beat-split"><td colspan="6">启动，不计入节拍</td></tr>`;
+    }
+    if (g.kind === "extra" && !seenExtra) {
+      seenExtra = true;
+      split = `<tr class="beat-split"><td colspan="6">流程外</td></tr>`;
+    }
     const curCls = g.code === curCode ? "cur" : "";
-    const extraCls = i >= flowLen ? "extra" : "";
-    return `<tr class="${curCls} ${extraCls}">
+    const dim = g.kind === "body" ? "" : "extra";
+    return `${split}<tr class="${curCls} ${dim}">
       <td class="bn">${esc(g.code)}</td>
       <td class="bt">${esc(g.name)}</td>
       <td class="bs">${fmtBeat(g.last)}</td>
@@ -556,10 +704,10 @@ function renderBeatSection(s, now) {
   }).join("");
   return `${summary}
     <table class="beattable">
-      <thead><tr><th>码</th><th>动作</th><th>上次</th><th>近均</th><th>最长</th><th>次</th></tr></thead>
+      <thead><tr><th>码</th><th>动作</th><th>上次</th><th>典型</th><th>最长</th><th>次</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <p class="muted" style="margin-top:8px">按本工位固定动作流程排序（启动→循环）；下方灰色行为流程外出现的异常码。周期节拍用「周期完成 / 回到就绪」间隔估算。</p>`;
+    <p class="muted" style="margin-top:8px">${esc(beatCaption(cyc))}</p>`;
 }
 
 function renderDrawer() {
@@ -705,11 +853,11 @@ function tickDurations() {
     const beatEl = el.querySelector(".beat");
     if (!s || !beatEl || !s.known) return;
     const curSec = now - s.since;
-    const avg = avgForCode(s, s.action ?? s.code, now);
-    const cyc = cycleBeat(s, now);
-    let beatText = `本步 <b>${fmtDur(curSec)}</b>`;
-    if (avg !== null && avg > 0) beatText += ` · 该动作近均 ${fmtDur(avg)}`;
-    if (cyc) beatText += ` · 周期近均 ${fmtDur(cyc.avg)}`;
+    const avg = avgForCode(s, s.action ?? s.code);
+    const cyc = cycleBeat(s);
+    let beatText = `本步 <b>${fmtBeat(curSec)}</b>`;
+    if (avg !== null && avg > 0) beatText += ` · 典型 ${fmtBeat(avg)}`;
+    if (cyc) beatText += ` · 节拍 ${fmtBeat(cyc.avg)}`;
     if (beatEl._html !== beatText) { beatEl._html = beatText; beatEl.innerHTML = beatText; }
   });
   $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -785,4 +933,4 @@ async function init() {
   setInterval(refreshLogsIfOpen, 5000);
 }
 
-init();
+if (typeof document !== "undefined") init();

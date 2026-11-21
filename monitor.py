@@ -13,7 +13,7 @@ from sim import Sim
 
 log = logging.getLogger("monitor")
 
-HISTORY_PER_STATION = 120
+HISTORY_PER_STATION = 480
 EVENTS_KEEP = 300
 ALERTS_KEEP = 300
 COMMAND_LABEL = {"reset": "复位", "start": "开始", "stop": "停止"}
@@ -423,7 +423,7 @@ class Monitor:
                  "since": s["since"], "lastSeen": s["lastSeen"],
                  "stopped": bool(s.get("stopped")), "paused": bool(s.get("paused")),
                  "running": s.get("running"), "alarmed": bool(s.get("alarmed")),
-                 "known": s["known"], "history": list(s["history"])[-80:]}
+                 "known": s["known"], "history": list(s["history"])}
                 for s in self.stations.values()
             ]
             alerts = list(self.alerts)[-100:]

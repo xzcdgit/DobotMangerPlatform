@@ -13,6 +13,8 @@ SIM_FLOWS = {
 }
 GENERIC_FLOW = [180, 181, 182, 184, 185, 186, 187]
 RESET_CODE = 100
+# 启动和握手只发生一次；循环从第一个工艺动作重新开始
+_ONCE_CATS = {"启动", "EAP初始化"}
 
 
 class Sim:
@@ -39,13 +41,19 @@ class Sim:
         return "模拟模式：复位完成：清除报警 → 下使能 → 上使能"
 
     def _sequence(self, station):
-        """返回 (动作序列, 循环回到的下标)。配置了 _beats 的线整表重复。"""
+        """返回 (动作序列, 循环回到的下标)。_beats 里的启动码只走一遍。"""
         kind = station["type"]
         if kind in SIM_FLOWS:
             return SIM_STARTUP + SIM_FLOWS[kind], len(SIM_STARTUP)
-        beats = self.monitor.cfg.get("beats") or []
+        beats = list(self.monitor.cfg.get("beats") or [])
         if beats:
-            return list(beats), 0
+            loop_at = 0
+            for i, code in enumerate(beats):
+                info = self.codes.codes.get(str(int(code)))
+                if not info or info["category"] not in _ONCE_CATS:
+                    loop_at = i
+                    break
+            return beats, loop_at
         return SIM_STARTUP + GENERIC_FLOW, len(SIM_STARTUP)
 
     def tick(self, now):

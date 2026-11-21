@@ -554,6 +554,10 @@ td.stations { color: var(--ink-3); font-size: 12px; max-width: 300px; }
 }
 .beattable td { padding: 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .beattable tr.cur { background: var(--brand-soft); }
+.beattable tr.beat-split td {
+  padding: 12px 6px 4px; border-bottom: none;
+  font-size: 10px; font-weight: 800; letter-spacing: .06em; color: var(--ink-3);
+}
 .beattable tr.extra td { color: var(--ink-3); }
 .beattable tr.extra .bt { font-weight: 500; }
 .beattable .bn { font-family: var(--mono); font-weight: 700; color: var(--ink-3); width: 42px; }

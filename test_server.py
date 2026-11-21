@@ -603,7 +603,36 @@ class ModbusCommandTest(AppCase):
         self.assertIsNone(st["code"])
 
 
+class _SteadyRnd:
+    def randrange(self, a, b=None):
+        return a
+
+    def randint(self, a, b):
+        return 1
+
+    def random(self):
+        return 0.5
+
+    def choice(self, seq):
+        return seq[0]
+
+
 class SimTest(AppCase):
+    def test_configured_beats_loop_after_startup(self):
+        app = self.make_app([station(1, type="上纸板")], _beats=[101, 104, 250, 204, 187])
+        sim = Sim(app.monitor, CODES, rnd=_SteadyRnd())
+        st = sim.state["1"]
+        st.update(i=-1, hold=0, frozen=0)
+        with app.monitor.lock:
+            for i in range(40):
+                sim.tick(1000.0 + i)
+        codes = [h["code"] for h in app.monitor.stations["1"]["history"]]
+        self.assertEqual(codes.count(101), 1)
+        self.assertEqual(codes.count(104), 1)
+        self.assertGreaterEqual(codes.count(187), 3)
+        self.assertGreaterEqual(codes.count(250), 3)
+        self.assertLess(codes.index(101), codes.index(250))
+
     def test_tick_only_records_valid_codes_and_never_crashes_for_unknown_type(self):
         app = self.make_app([station(1, type="未知工位"), station(2, "192.168.5.2", type="灌装")])
         sim = Sim(app.monitor, CODES)
