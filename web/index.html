@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>美国线 · 工作站状态监控</title>
+<script>
+/* 在首屏绘制前套上上次的主题，避免先闪一下黑夜 */
+(function () {
+  var t = "night";
+  try { t = localStorage.getItem("dmp-theme") || t; } catch (e) {}
+  if (t !== "night" && t !== "zelda" && t !== "day") t = "night";
+  document.documentElement.dataset.theme = t;
+})();
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -39,6 +48,17 @@
         <span class="modesw-track" aria-hidden="true"><i></i></span>
         <span class="modesw-text"><b id="modeName">真实模式</b><small id="modeSub"></small></span>
       </button>
+      <div class="themes" role="radiogroup" aria-label="页面主题">
+        <button type="button" role="radio" data-theme="night" aria-checked="true" title="黑夜" aria-label="黑夜">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15.2 3.1a8.6 8.6 0 1 0 5.7 14.8A7.4 7.4 0 0 1 15.2 3.1z"/></svg>
+        </button>
+        <button type="button" role="radio" data-theme="zelda" aria-checked="false" title="塞尔达" aria-label="塞尔达">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2.4 16.8 10.4H7.2zm-5 9.2L11.2 20H2.8zm10 0L21.2 20h-8.4z"/></svg>
+        </button>
+        <button type="button" role="radio" data-theme="day" aria-checked="false" title="白昼" aria-label="白昼">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.4" fill="currentColor"/><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 2.6v2.3M12 19.1v2.3M2.6 12h2.3M19.1 12h2.3M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></g></svg>
+        </button>
+      </div>
       <button class="ghost" id="sound" aria-pressed="false" title="出现新的停机时蜂鸣提醒">声音 关</button>
       <div class="sample" id="sampleRate" title="Modbus 轮询来自 config.json 的 poll_interval；页面刷新固定约 1 秒">采样 …</div>
       <time id="clock"></time>

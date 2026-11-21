@@ -872,6 +872,28 @@ function showView(name) {
   if (name === "messages") openMessages();
 }
 
+const THEMES = ["night", "zelda", "day"];
+const THEME_KEY = "dmp-theme";
+
+function applyTheme(name) {
+  const theme = THEMES.includes(name) ? name : "night";
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+  document.querySelectorAll(".themes [data-theme]").forEach((b) => {
+    b.setAttribute("aria-checked", String(b.dataset.theme === theme));
+  });
+}
+
+function bindTheme() {
+  const box = document.querySelector(".themes");
+  if (!box) return;
+  applyTheme(document.documentElement.dataset.theme || "night");
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-theme]");
+    if (b) applyTheme(b.dataset.theme);
+  });
+}
+
 function bind() {
   document.querySelector(".tabs").addEventListener("click", (e) => {
     const b = e.target.closest("button");
@@ -913,6 +935,7 @@ function bind() {
     $("sound").textContent = `声音 ${view.soundOn ? "开" : "关"}`;
     if (view.soundOn) beep();
   });
+  bindTheme();
   bindLogs();
   bindMessages();
   bindCodes();
@@ -933,4 +956,7 @@ async function init() {
   setInterval(refreshLogsIfOpen, 5000);
 }
 
-if (typeof document !== "undefined") init();
+if (typeof document !== "undefined") {
+  applyTheme(document.documentElement.dataset.theme || "night");
+  init();
+}
