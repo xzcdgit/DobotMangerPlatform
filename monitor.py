@@ -159,7 +159,10 @@ class Monitor:
     def record(self, st, code, now, action=None, fault=None):
         """记录一次读数；调用方须持有 lock。code 为 None 表示离线。
         code/action 表示工艺状态；fault 表示异常，二者分寄存器，互不覆盖。
-        时间线上的等级跟异常码：出现时是停机/过程异常，清除时才是恢复，时长只算异常本身。"""
+        时间线上的等级跟异常码：出现时是停机/过程异常，清除时才是恢复，时长只算异常本身。
+        已冻结的工位不再记读数，避免冻结后迟到的一拍又把它写成无响应或重新报警。"""
+        if not st.get("enabled", True):
+            return
         was_known = st["known"]
         st["known"] = True
         if code is not None:
@@ -291,7 +294,7 @@ class Monitor:
                                           cfg["register_type"], cfg["timeout"])
         except (OSError, struct.error):
             with self.lock:
-                if gen != self._gen:
+                if gen != self._gen or not st.get("enabled", True):
                     return
                 self._note_miss(st, cfg)
             return
@@ -308,8 +311,8 @@ class Monitor:
         except (OSError, struct.error, ValueError):
             stopped, paused, running, alarmed = None, None, None, None
         with self.lock:
-            if gen != self._gen:
-                return  # 读的过程中已切换模式，这个读数不属于当前模式
+            if gen != self._gen or not st.get("enabled", True):
+                return  # 读的过程中已切换模式或被冻结，这个读数不再写入
             st["failures"] = 0
             st["fail_since"] = None
             if stopped is not None:

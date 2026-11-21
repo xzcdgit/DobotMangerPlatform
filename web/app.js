@@ -465,12 +465,13 @@ function buildBoard(stations) {
 
 function patchCard(el, s, now) {
   const lv = viewLevel(s);
-  const lvText = s.known ? levelLabel(s, now) : LEVEL_TEXT.pending;
+  const frozen = s.enabled === false;
+  const lvText = frozen ? LEVEL_TEXT.frozen : (s.known ? levelLabel(s, now) : LEVEL_TEXT.pending);
   // 动作码与异常码分开展示：大码/步骤跟动作；有异常时另标异常，不再用异常盖住动作
   const hasFault = s.known && s.fault;
   const code = !s.known ? "···" : (s.code === null ? "OFF" : String(s.action ?? s.code ?? "···"));
-  let step = "等待第一次读数";
-    if (s.known) {
+  let step = frozen ? "已冻结" : "等待第一次读数";
+    if (!frozen && s.known) {
     if (s.code === null) step = codeName(null);
     else {
       step = codeName(s.action ?? s.code);
@@ -502,10 +503,17 @@ function patchCard(el, s, now) {
   if (cycEl) cycEl.textContent = cyc ? fmtBeat(cyc.avg) : "—";
 
   if (durEl) {
-    durEl.dataset.since = String(s.since);
-    if (avg !== null && avg > 0) durEl.dataset.avg = String(avg);
-    else delete durEl.dataset.avg;
-    durEl.textContent = s.known ? fmtBeat(curSec) : "—";
+    if (frozen || !s.known) {
+      durEl.removeAttribute("data-since");
+      delete durEl.dataset.avg;
+      durEl.classList.remove("is-late");
+      durEl.textContent = "—";
+    } else {
+      durEl.dataset.since = String(s.since);
+      if (avg !== null && avg > 0) durEl.dataset.avg = String(avg);
+      else delete durEl.dataset.avg;
+      durEl.textContent = fmtBeat(curSec);
+    }
   }
   const open = el.querySelector(".card-open");
   if (open) open.setAttribute("aria-label", `${stationLabel(s)} ${lvText} ${step}`);
@@ -750,11 +758,13 @@ function syncControls() {
       b.setAttribute("aria-pressed", String(pressed));
     });
   }
+  const note = $("ctrlNote");
+  if (!note) return;
   const pin = s.pinRequired ? "操作前需输入操作密码；" : "";
   const modeHint = s.commandMode === "dobot"
     ? "真实模式按越疆线圈控制：开始/停止为上升沿脉冲；复位=清报警→下使能(等待)→上使能(等待)。"
     : "真实模式写入保持寄存器（command_register）。";
-  $("ctrlNote").textContent = !s.canControl
+  note.textContent = !s.canControl
     ? "真实模式下未启用命令通道（请将 command_mode 设为 dobot，或配置 command_register）。"
     : s.test ? `${pin}测试模式：命令只作用于模拟数据，不会发给真实设备。` : `${pin}${modeHint}所有操作都会记入日志。`;
 }
@@ -789,9 +799,10 @@ function renderBeatSection(s, now) {
   const cyc = model.cyc;
   const curCode = s.action ?? s.code;
   const cur = s.known ? (model.byCode.get(curCode) || null) : null;
+  const curShown = s.enabled === false ? "—" : fmtBeat(now - s.since);
   const summary = `
     <div class="beat-summary">
-      <div><b>${fmtBeat(now - s.since)}</b><span>当前动作</span></div>
+      <div><b>${curShown}</b><span>当前动作</span></div>
       <div><b>${cur && cur.n ? fmtBeat(cur.avg) : "—"}</b><span>该步典型</span></div>
       <div><b>${cyc ? fmtBeat(cyc.avg) : "—"}</b><span>常见节拍${cyc ? ` · ${cyc.n}圈` : ""}</span></div>
     </div>`;
@@ -847,8 +858,8 @@ function renderDrawer() {
     .map((h) => `<li><time>${fmtTime(h.t)}</time><span>${esc(codeName(h.code))}</span><b class="${levelOf(h.code)}">${esc(h.code ?? "OFF")}</b></li>`)
     .join("");
   const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
-  let stepText = "等待第一次读数";
-  if (s.known) {
+  let stepText = s.enabled === false ? "已冻结" : "等待第一次读数";
+  if (s.enabled !== false && s.known) {
     if (s.code === null) stepText = codeName(null);
     else {
       stepText = codeName(s.action ?? s.code);
@@ -865,7 +876,7 @@ function renderDrawer() {
       <div class="step-big">${esc(stepText)}</div>
       <div class="code-row">
         <b>${esc(s.known ? (showCode ?? "OFF") : "···")}</b>
-        <span>${esc(s.known ? levelLabel(s, now) : LEVEL_TEXT.pending)}</span>
+        <span>${esc(s.enabled === false ? LEVEL_TEXT.frozen : (s.known ? levelLabel(s, now) : LEVEL_TEXT.pending))}</span>
         <span class="sub">${esc(s.ip)}:${esc(s.port)}${s.type ? ` · ${esc(s.type)}` : ""}</span>
       </div>
     </div>`;
@@ -906,8 +917,8 @@ async function setStationEnabled(id, enabled) {
   const answer = await ask({ title: `${label}：${stationLabel(s)}`, text, okText: `确认${label}`, danger: !enabled });
   if (!answer) return;
   view.busy = true;
-  syncControls();
   try {
+    syncControls();
     const res = await api("POST", "/api/station", { id, enabled, pin: answer.pin });
     toast(`${s.name}：${label}${res.changed === false ? "未变化" : "已完成"}。${res.detail || ""}`, res.ok ? "ok" : "error");
   } catch (e) {
@@ -926,8 +937,8 @@ async function runCommand(cmd) {
   const answer = await ask({ title: `${c.label}：${stationLabel(s)}`, text: c.confirm, okText: `确认${c.label}`, danger: c.danger });
   if (!answer) return;
   view.busy = true;
-  syncControls();
   try {
+    syncControls();
     const res = await api("POST", "/api/command", { id: s.id, command: cmd, pin: answer.pin });
     toast(`${s.name}：${c.label}${res.ok ? "已执行" : "失败"}。${res.detail}`, res.ok ? "ok" : "error");
   } catch (e) {

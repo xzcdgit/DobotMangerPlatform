@@ -473,6 +473,11 @@ class MonitorTest(AppCase):
             for i in range(30):
                 self.mon.sim.tick(now + 10 + i)
         self.assertEqual(self.st["code"], 204)
+        alerts = len(self.mon.alerts)
+        self.mon.record(self.st, None, now + 40)
+        self.mon.record(self.st, 187, now + 41, action=187, fault=920)
+        self.assertEqual(self.st["code"], 204)
+        self.assertEqual(len(self.mon.alerts), alerts)
         again = Monitor(self.app.cfg, CODES, self.app.logs, server.HostInfo([]), None, str(path))
         self.assertFalse(again.stations["71"]["enabled"])
         self.assertTrue(again.stations["73"]["enabled"])
