@@ -1,11 +1,12 @@
 "use strict";
 
 /* 公共工具：所有页面脚本共用 */
-const LEVEL_TEXT = { ok: "运行", warn: "过程异常", stop: "停机", offline: "离线", unknown: "未知码", pending: "连接中" };
+const LEVEL_TEXT = { ok: "运行", warn: "过程异常", stop: "停机", offline: "离线", unknown: "未知码", pending: "连接中", frozen: "已冻结" };
 const PAGE_POLL_MS = 1000; /* 浏览器拉 /api/state 的间隔；与 config poll_interval（Modbus）分开 */
 
 /* 控制器：报警/停止状态/暂停；「运行」触点只展示不判停（脚本 Wait 时经常为0） */
 function levelLabel(s, now) {
+  if (s.enabled === false) return LEVEL_TEXT.frozen;
   if (!s.known) return LEVEL_TEXT.pending;
   if (s.code === null) return LEVEL_TEXT.offline;
   if (s.alarmed) return "报警";
@@ -46,6 +47,7 @@ function worseLevel(a, b) {
 }
 
 function viewLevel(s) {
+  if (s.enabled === false) return "frozen";
   if (!s.known) return "pending";
   if (s.code === null) return "offline";
   let lv = levelOf(s.action ?? s.code);
@@ -56,6 +58,7 @@ function viewLevel(s) {
 }
 
 function attentionText(s) {
+  if (s.enabled === false) return "已冻结";
   if (!s.known) return "连接中";
   if (s.code === null) return codeName(null);
   if (s.alarmed) return "报警";

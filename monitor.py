@@ -28,15 +28,16 @@ def _worse_level(*levels):
 
 def new_station(s):
     return {**s, "code": None, "action": None, "fault": None, "faultSince": None, "known": False,
-            "since": time.time(), "lastSeen": None, "failures": 0,
+            "since": time.time(), "lastSeen": None, "failures": 0, "fail_since": None,
             "stopped": False, "paused": False, "running": None, "alarmed": False,
+            "enabled": True,
             "history": deque(maxlen=HISTORY_PER_STATION)}
 
 
 class Monitor:
     """mode == "sim" 是测试模式（虚拟状态）；其余为真实模式（读取真实状态）。"""
 
-    def __init__(self, cfg, codes, logs, host, mode_path=None):
+    def __init__(self, cfg, codes, logs, host, mode_path=None, hold_path=None):
         self.cfg = cfg
         self.codes = codes
         self.logs = logs
@@ -44,6 +45,7 @@ class Monitor:
         self.lock = threading.Lock()
         self._switch_lock = threading.Lock()
         self.mode_path = str(mode_path) if mode_path else None
+        self.hold_path = str(hold_path) if hold_path else None
         self.live_mode = "modbus" if cfg["mode"] == TEST else cfg["mode"]
         self.mode = self._initial_mode()
         self._gen = 0  # 每次切换模式加一，旧线程发现代数变了就退出
@@ -52,7 +54,9 @@ class Monitor:
         self._io_locks = {}
         self.sim = None
         self.sim_factory = lambda mon: Sim(mon, mon.codes)
+        self._frozen = self._load_frozen()
         self.stations = {s["id"]: new_station(s) for s in cfg["stations"]}
+        self._apply_enabled()
 
     def _initial_mode(self):
         """上次在页面上选的模式优先；config.json 的 mode 改过之后，旧选择作废。"""
@@ -65,6 +69,64 @@ class Monitor:
             except (OSError, ValueError, AttributeError):
                 pass
         return self.cfg["mode"]
+
+    def _load_frozen(self):
+        """上次冻结的工位。文件不存在或损坏时全部视为启用。"""
+        if not self.hold_path:
+            return set()
+        try:
+            with open(self.hold_path, encoding="utf-8") as f:
+                saved = json.load(f)
+            return {str(i) for i in (saved.get("frozen") or [])}
+        except (OSError, ValueError, AttributeError):
+            return set()
+
+    def _save_holds(self):
+        if not self.hold_path:
+            return
+        tmp = self.hold_path + ".tmp"
+        try:
+            os.makedirs(os.path.dirname(self.hold_path) or ".", exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"frozen": sorted(self._frozen)}, f)
+            os.replace(tmp, self.hold_path)
+        except OSError:
+            log.exception("保存工位冻结状态失败：%s", self.hold_path)
+
+    def _apply_enabled(self):
+        """按已保存的冻结名单设置 enabled。调用方须持有 lock，或处于尚未对外服务的初始化。"""
+        known = set(self.stations)
+        self._frozen &= known
+        for sid, st in self.stations.items():
+            st["enabled"] = sid not in self._frozen
+
+    def set_enabled(self, station_id, enabled, client):
+        """启用或冻结工位。冻结只停轮询和告警，不向机器人下发停止。"""
+        station_id = str(station_id)
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled 必须是 true 或 false")
+        with self.lock:
+            st = self.stations.get(station_id)
+            if st is None:
+                raise KeyError(station_id)
+            if st.get("enabled", True) == enabled:
+                return {"ok": True, "enabled": enabled, "changed": False, "detail": "状态未变"}
+            st["enabled"] = enabled
+            if enabled:
+                self._frozen.discard(station_id)
+                st["failures"] = 0
+                st["fail_since"] = None
+                detail = "恢复轮询和告警"
+            else:
+                self._frozen.add(station_id)
+                detail = "已停止轮询和告警，未向设备下发停止"
+            self._save_holds()
+            now = time.time()
+            self.logs.append({"t": now, "kind": "command", "command": "enable" if enabled else "freeze",
+                              "ok": True, "no": st["no"], "name": st["name"], "ip": st["ip"], "port": st["port"],
+                              "client": client, "test": self.mode == TEST,
+                              "text": "启用" if enabled else "冻结", "detail": detail})
+        return {"ok": True, "enabled": enabled, "changed": True, "detail": detail}
 
     def _save_mode(self):
         if not self.mode_path:
@@ -187,6 +249,8 @@ class Monitor:
 
     def _display_level(self, st):
         """页面等级：异常码会把卡片加重；报警/停止触点同样算停机。不用「运行」触点判停。"""
+        if not st.get("enabled", True):
+            return "frozen"
         if st.get("code") is None:
             return "offline"
         levels = [self.codes.level_of(self._severity_level_code(st))]
@@ -200,12 +264,63 @@ class Monitor:
         return _worse_level(*levels)
 
     def _mark_offline(self, st, now):
-        """连续读失败后清掉触点锁存，避免掉线前的报警在重连失败时还把卡片染红。"""
+        """持续读不到动作码后清掉触点锁存，避免掉线前的报警在重连失败时还把卡片染红。"""
         st["running"] = None
         st["stopped"] = False
         st["paused"] = False
         st["alarmed"] = False
         self.record(st, None, now, action=None, fault=None)
+
+    def _note_miss(self, st, cfg, now=None):
+        """动作寄存器这一拍没读到。调用方须持有 lock。
+
+        偶发断连保留上一动作，不报无响应。连续失败次数和距离上次成功的时间都达到阈值，才判掉线。
+        """
+        now = time.time() if now is None else now
+        st["failures"] += 1
+        if st.get("fail_since") is None:
+            st["fail_since"] = now
+        last = st.get("lastSeen") or st["fail_since"]
+        if st["failures"] >= cfg["offline_after_failures"] and now - last >= cfg["offline_after_sec"]:
+            self._mark_offline(st, now)
+
+    def _poll_once(self, st, cfg, gen):
+        """读一拍。动作寄存器读到即算在线；异常寄存器或触点失败只沿用上一次，不算无响应。"""
+        try:
+            action = modbus.read_register(st["ip"], st["port"], cfg["slave_id"], cfg["action_register"],
+                                          cfg["register_type"], cfg["timeout"])
+        except (OSError, struct.error):
+            with self.lock:
+                if gen != self._gen:
+                    return
+                self._note_miss(st, cfg)
+            return
+        fault_ok = False
+        fault = 0
+        try:
+            fault = modbus.read_register(st["ip"], st["port"], cfg["slave_id"], cfg["fault_register"],
+                                         cfg["register_type"], cfg["timeout"])
+            fault_ok = True
+        except (OSError, struct.error):
+            pass
+        try:
+            stopped, paused, running, alarmed = self._read_robot_bits(st, cfg)
+        except (OSError, struct.error, ValueError):
+            stopped, paused, running, alarmed = None, None, None, None
+        with self.lock:
+            if gen != self._gen:
+                return  # 读的过程中已切换模式，这个读数不属于当前模式
+            st["failures"] = 0
+            st["fail_since"] = None
+            if stopped is not None:
+                st["stopped"] = stopped
+            if paused is not None:
+                st["paused"] = paused
+            if running is not None:
+                st["running"] = running
+            if alarmed is not None:
+                st["alarmed"] = alarmed
+            self.record(st, action, time.time(), action=action, fault=(fault or 0) if fault_ok else None)
 
     # ---------- Modbus 轮询 ----------
     def poll_loop(self, station_id, gen=None):
@@ -215,37 +330,11 @@ class Monitor:
             st = self.stations.get(station_id)
             if st is None or gen != self._gen:
                 return
+            if not st.get("enabled", True):
+                time.sleep(self.cfg["poll_interval"])
+                continue
             try:
-                action = modbus.read_register(st["ip"], st["port"], cfg["slave_id"], cfg["action_register"],
-                                              cfg["register_type"], cfg["timeout"])
-                fault = modbus.read_register(st["ip"], st["port"], cfg["slave_id"], cfg["fault_register"],
-                                             cfg["register_type"], cfg["timeout"])
-                # 动作码与异常码分寄存器：状态轨迹只跟动作码；异常单独存放
-                code = action
-                try:
-                    stopped, paused, running, alarmed = self._read_robot_bits(st, cfg)
-                except (OSError, struct.error, ValueError):
-                    stopped, paused, running, alarmed = None, None, None, None
-                with self.lock:
-                    if gen != self._gen:
-                        return  # 读的过程中已切换模式，这个读数不属于当前模式
-                    st["failures"] = 0
-                    if stopped is not None:
-                        st["stopped"] = stopped
-                    if paused is not None:
-                        st["paused"] = paused
-                    if running is not None:
-                        st["running"] = running
-                    if alarmed is not None:
-                        st["alarmed"] = alarmed
-                    self.record(st, code, time.time(), action=action, fault=fault or 0)
-            except (OSError, struct.error):
-                with self.lock:
-                    if gen != self._gen:
-                        return
-                    st["failures"] += 1
-                    if st["failures"] >= cfg["offline_after_failures"]:
-                        self._mark_offline(st, time.time())
+                self._poll_once(st, cfg, gen)
             except Exception:  # 单个站的意外错误不能让该站的轮询线程退出
                 log.exception("轮询工作站 %s 出错", station_id)
             time.sleep(self.cfg["poll_interval"])
@@ -280,6 +369,7 @@ class Monitor:
                 self._gen += 1
                 self.mode = target
                 self.stations = {s["id"]: new_station(s) for s in self.cfg["stations"]}
+                self._apply_enabled()
                 self.events.clear()
                 self.alerts.clear()
                 self.sim = self.sim_factory(self) if target == TEST else None
@@ -421,6 +511,7 @@ class Monitor:
                  "action": s.get("action"), "fault": s.get("fault"), "faultSince": s.get("faultSince"),
                  "level": self._display_level(s),
                  "since": s["since"], "lastSeen": s["lastSeen"],
+                 "enabled": bool(s.get("enabled", True)),
                  "stopped": bool(s.get("stopped")), "paused": bool(s.get("paused")),
                  "running": s.get("running"), "alarmed": bool(s.get("alarmed")),
                  "known": s["known"], "history": list(s["history"])}

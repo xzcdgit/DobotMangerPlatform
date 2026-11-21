@@ -36,6 +36,8 @@ DEFAULT_MODBUS = {
     "slave_id": 1,
     "timeout": 1.0,
     "offline_after_failures": 3,
+    # 动作寄存器持续这么多秒没读到，才判无响应。偶发断连、异常寄存器失败不算掉线。
+    "offline_after_sec": 5,
     # dobot：按手册写线圈；register：写保持寄存器（旧占位方案）
     "command_mode": "dobot",
     "coil_pulse_ms": 200,
@@ -165,6 +167,8 @@ def _modbus(raw):
     if not _is_number(m["timeout"]) or m["timeout"] <= 0:
         raise ConfigError("modbus.timeout 必须是大于 0 的数字（秒）")
     _int_in(m["offline_after_failures"], 1, 1000, "modbus.offline_after_failures")
+    if not _is_number(m["offline_after_sec"]) or not 0 <= m["offline_after_sec"] <= 120:
+        raise ConfigError("modbus.offline_after_sec 必须是 0~120 的数字（秒），当前值：%r" % m["offline_after_sec"])
     if m["command_mode"] not in COMMAND_MODES:
         raise ConfigError("modbus.command_mode 只能是 dobot 或 register")
     _int_in(m["coil_pulse_ms"], 1, 5000, "modbus.coil_pulse_ms")

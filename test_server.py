@@ -17,7 +17,7 @@ import modbus
 import server
 import store
 from codes import Codes
-from monitor import Monitor
+from monitor import Monitor, new_station
 from sim import Sim
 
 TABLE = json.loads((server.HERE / "codes.json").read_text(encoding="utf-8"))
@@ -460,6 +460,30 @@ class MonitorTest(AppCase):
         entry = self.logs()[-1]
         self.assertEqual((entry["kind"], entry["command"], entry["client"], entry["ok"]), ("command", "reset", "10.0.0.5", True))
 
+    def test_freeze_stops_sim_and_survives_reload(self):
+        path = Path(tempfile.mkdtemp()) / "holds.json"
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        self.mon.hold_path = str(path)
+        now = time.time()
+        self.mon.record(self.st, 204, now, action=204, fault=0)
+        res = self.mon.set_enabled("71", False, "c")
+        self.assertEqual((res["ok"], res["changed"], res["enabled"]), (True, True, False))
+        self.assertEqual(self.mon.snapshot()["stations"][0]["level"], "frozen")
+        with self.mon.lock:
+            for i in range(30):
+                self.mon.sim.tick(now + 10 + i)
+        self.assertEqual(self.st["code"], 204)
+        again = Monitor(self.app.cfg, CODES, self.app.logs, server.HostInfo([]), None, str(path))
+        self.assertFalse(again.stations["71"]["enabled"])
+        self.assertTrue(again.stations["73"]["enabled"])
+        with self.mon.lock:
+            self.mon.stations = {s["id"]: new_station(s) for s in self.mon.cfg["stations"]}
+            self.mon._apply_enabled()
+        self.assertFalse(self.mon.stations["71"]["enabled"])
+        back = self.mon.set_enabled("71", True, "c")
+        self.assertTrue(back["enabled"])
+        self.assertEqual(self.mon.set_enabled("71", True, "c")["changed"], False)
+
     def test_sim_stop_pauses_and_start_resumes(self):
         self.mon.send_command("71", "stop", "x")
         self.assertTrue(self.st["paused"])
@@ -592,6 +616,7 @@ class ModbusCommandTest(AppCase):
         app, fake = self.make_with_fake(mode="close")
         mon, st = app.monitor, app.monitor.stations["1"]
         mon.cfg["modbus"]["offline_after_failures"] = 1
+        mon.cfg["modbus"]["offline_after_sec"] = 0
         mon.cfg["poll_interval"] = 0.05
         threading.Thread(target=mon.poll_loop, args=("1",), daemon=True).start()
         deadline = time.time() + 3
@@ -601,6 +626,41 @@ class ModbusCommandTest(AppCase):
                 break
         self.assertTrue(st["known"])
         self.assertIsNone(st["code"])
+
+    def test_fault_blip_does_not_mark_offline(self):
+        app, _ = self.make_with_fake()
+        mon, st = app.monitor, app.monitor.stations["1"]
+        cfg = mon.cfg["modbus"]
+
+        def fake_read(_ip, _port, _slave, reg, _rtype, _timeout):
+            if reg == cfg["fault_register"]:
+                raise OSError("连接被关闭")
+            return 204
+
+        with mock.patch.object(modbus, "read_register", fake_read), \
+             mock.patch.object(mon, "_read_robot_bits", return_value=(False, False, True, False)):
+            mon._poll_once(st, cfg, mon._gen)
+        self.assertEqual((st["code"], st["action"], st["failures"]), (204, 204, 0))
+        self.assertFalse(any(e["level"] == "offline" for e in mon.alerts))
+
+    def test_short_miss_keeps_last_action_until_sustained(self):
+        app, _ = self.make_with_fake()
+        mon, st = app.monitor, app.monitor.stations["1"]
+        cfg = mon.cfg["modbus"]
+        now = time.time()
+        with mon.lock:
+            mon.record(st, 204, now, action=204, fault=0)
+            for _ in range(8):
+                mon._note_miss(st, cfg, now + 0.2)
+        self.assertEqual(st["code"], 204)
+        self.assertFalse(any(e["level"] == "offline" for e in mon.alerts))
+        with mon.lock:
+            st["lastSeen"] = now - 6
+            mon._note_miss(st, cfg, now)
+            mon._note_miss(st, cfg, now)
+            mon._note_miss(st, cfg, now)
+        self.assertIsNone(st["code"])
+        self.assertEqual(mon.alerts[-1]["level"], "offline")
 
 
 class _SteadyRnd:
@@ -632,6 +692,24 @@ class SimTest(AppCase):
         self.assertGreaterEqual(codes.count(187), 3)
         self.assertGreaterEqual(codes.count(250), 3)
         self.assertLess(codes.index(101), codes.index(250))
+        self.assertNotIn(None, codes)
+
+    def test_sim_does_not_invent_offline(self):
+        class _GlitchRnd(_SteadyRnd):
+            def random(self):
+                return 0.001  # 以前这一档会记成无响应
+
+        app = self.make_app([station(1, type="上纸板")], _beats=[101, 204, 187])
+        sim = Sim(app.monitor, CODES, rnd=_GlitchRnd())
+        st = sim.state["1"]
+        st.update(i=-1, hold=0, frozen=0)
+        with app.monitor.lock:
+            for i in range(20):
+                sim.tick(1000.0 + i)
+        codes = [h["code"] for h in app.monitor.stations["1"]["history"]]
+        self.assertTrue(codes)
+        self.assertNotIn(None, codes)
+        self.assertIsNotNone(app.monitor.stations["1"]["code"])
 
     def test_tick_only_records_valid_codes_and_never_crashes_for_unknown_type(self):
         app = self.make_app([station(1, type="未知工位"), station(2, "192.168.5.2", type="灌装")])
@@ -678,6 +756,15 @@ class HttpTest(HttpBase):
         status, body, _ = self.call("GET", "/")
         self.assertEqual(status, 200)
         self.assertIn(b"<html", body)
+
+    def test_station_hold_requires_pin_and_toggles(self):
+        self.assertEqual(self.json("POST", "/api/station", {"id": "71", "enabled": False})[0], 403)
+        self.assertEqual(self.json("POST", "/api/station", {"id": "71", "enabled": "no", "pin": "1234"})[0], 400)
+        status, data = self.json("POST", "/api/station", {"id": "71", "enabled": False, "pin": "1234"})
+        self.assertEqual((status, data["enabled"], data["changed"]), (200, False, True))
+        row = next(s for s in self.json("GET", "/api/state")[1]["stations"] if s["id"] == "71")
+        self.assertEqual((row["enabled"], row["level"]), (False, "frozen"))
+        self.assertEqual(self.json("POST", "/api/station", {"id": "999", "enabled": True, "pin": "1234"})[0], 404)
 
     def test_command_requires_pin(self):
         status, data = self.json("POST", "/api/command", {"id": "71", "command": "reset"})

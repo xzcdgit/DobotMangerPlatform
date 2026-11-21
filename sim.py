@@ -60,7 +60,7 @@ class Sim:
         """推进一步；调用方须持有 monitor.lock。"""
         rnd = self.rnd
         for sid, station in self.monitor.stations.items():
-            if station["paused"]:
+            if not station.get("enabled", True) or station["paused"]:
                 continue
             st = self.state[sid]
             seq, loop_at = self._sequence(station)
@@ -68,7 +68,7 @@ class Sim:
                 continue
             if st["i"] >= len(seq):
                 st["i"] = min(loop_at, len(seq) - 1)
-            if st["frozen"] > 0:  # 停机锁存或离线，维持到倒计时结束再重新启动
+            if st["frozen"] > 0:  # 停机锁存，维持到倒计时结束再重新启动
                 st["frozen"] -= 1
                 if st["frozen"] == 0:
                     st["i"] = 0
@@ -79,10 +79,6 @@ class Sim:
             st["hold"] = rnd.randint(1, 3)
             roll = rnd.random()
             pool = self.codes.pool(station["type"])
-            if roll < 0.004:
-                st["frozen"] = rnd.randint(4, 8)
-                self.monitor.record(station, None, now, action=None, fault=None)
-                continue
             action_now = station.get("action") or seq[min(st["i"], len(seq) - 1)]
             if roll < 0.010:
                 stops = [c for c in pool if 900 <= c < 940]

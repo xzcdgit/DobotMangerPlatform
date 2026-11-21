@@ -36,11 +36,11 @@ log = logging.getLogger("monitor.http")
 
 
 class App:
-    def __init__(self, cfg, codes, logs, messages, host, mode_path=None):
+    def __init__(self, cfg, codes, logs, messages, host, mode_path=None, hold_path=None):
         self.cfg = cfg
         self.logs = logs
         self.messages = messages
-        self.monitor = Monitor(cfg, codes, logs, host, mode_path)
+        self.monitor = Monitor(cfg, codes, logs, host, mode_path, hold_path)
 
     def pin_ok(self, given):
         pin = self.cfg["control_pin"]
@@ -159,6 +159,7 @@ def make_handler(app):
         # ---------- POST / DELETE ----------
         def do_POST(self):
             self._dispatch({"/api/report": self._report, "/api/command": self._command,
+                            "/api/station": self._station,
                             "/api/mode": self._mode, "/api/messages": self._add_message})
 
         def do_DELETE(self):
@@ -180,6 +181,8 @@ def make_handler(app):
                 st = mon.stations.get(sid)
                 if st is None:
                     raise ApiError(404, "未知工作站 " + sid)
+                if not st.get("enabled", True):
+                    raise ApiError(409, "该工位已冻结，已忽略上报")
                 mon.record(st, code, time.time())
             self._json({"ok": True})
 
@@ -190,6 +193,20 @@ def make_handler(app):
             try:
                 result = app.monitor.send_command(str(body.get("id", "")), body.get("command"),
                                                   self.client_address[0])
+            except KeyError:
+                raise ApiError(404, "未知工作站") from None
+            except ValueError as e:
+                raise ApiError(400, str(e)) from None
+            self._json(result)
+
+        def _station(self, _):
+            body = self._body()
+            if not app.pin_ok(body.get("pin")):
+                raise ApiError(403, "操作密码错误")
+            if not isinstance(body.get("enabled"), bool):
+                raise ApiError(400, "需要 {id, enabled: true 或 false}")
+            try:
+                result = app.monitor.set_enabled(str(body.get("id", "")), body["enabled"], self.client_address[0])
             except KeyError:
                 raise ApiError(404, "未知工作站") from None
             except ValueError as e:
@@ -236,7 +253,7 @@ def build_app(config_path=None, codes_path=None, data_dir=None):
     data = Path(data_dir or HERE / "data")
     host = HostInfo(s["ip"] for s in cfg["stations"])
     return App(cfg, Codes(table), LogStore(data / "logs"), MessageStore(data / "messages.json"), host,
-               data / "mode.json")
+               data / "mode.json", data / "holds.json")
 
 
 def main():

@@ -28,6 +28,7 @@
 
     <nav class="tabs" role="tablist" aria-label="页面">
       <button role="tab" aria-selected="true" data-view="overview">总览</button>
+      <button role="tab" aria-selected="false" data-view="line">产线</button>
       <button role="tab" aria-selected="false" data-view="logs">日志</button>
       <button role="tab" aria-selected="false" data-view="messages">留言<i class="dot" id="msgDot" hidden></i></button>
       <button role="tab" aria-selected="false" data-view="codes">状态码表</button>
@@ -131,6 +132,15 @@
         <p id="alertsEmpty" class="rail-ok">暂无事件</p>
       </div>
     </aside>
+  </main>
+
+  <main id="view-line" class="view page" hidden>
+    <div class="page-head">
+      <h2>产线生产看板</h2>
+      <p class="muted">按产线看节拍和窗口产量。节拍取本线最慢工位，产量取各工位已完成圈数的最小值。</p>
+    </div>
+    <div class="line-kpis" id="lineKpis"></div>
+    <div id="lineBoard" class="line-board"></div>
   </main>
 
   <main id="view-logs" class="view page" hidden>

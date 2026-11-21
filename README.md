@@ -81,7 +81,8 @@
 | `poll_interval` | Modbus 轮询间隔，秒（当前配置 0.05=50ms；浏览器刷新仍约 1 秒） |
 | `modbus.action_register` | 动作码寄存器（工艺步骤 1xx~5xx），默认 4100，勿占用业务地址 |
 | `modbus.fault_register` | 异常码寄存器（8xx/9xx，0=无异常），默认 4101，与动作码分开 |
-| `modbus.offline_after_failures` | 连续读取失败多少次后判为离线 |
+| `modbus.offline_after_failures` | 动作寄存器连续读失败多少次后，才允许判无响应 |
+| `modbus.offline_after_sec` | 距离上次成功读到动作码至少这么多秒，才判无响应。异常寄存器或触点偶发失败不算掉线 |
 | `modbus.command_mode` | `dobot`（默认，写越疆 map1 线圈）或 `register`（写保持寄存器） |
 | `modbus.coils` | Dobot 线圈地址：start/stop/enable/disable/clear_alarm |
 | `modbus.coil_pulse_ms` / `coil_gap_ms` | 上升沿脉冲宽度、清报警后短间隔（毫秒） |

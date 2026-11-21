@@ -1,10 +1,9 @@
 """打包便携部署版：内置 Windows 嵌入式 Python，目标机无需安装 Python。"""
 from __future__ import annotations
 
+import argparse
 import datetime as dt
-import hashlib
 import shutil
-import sys
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -38,10 +37,12 @@ INCLUDE_DIRS = ["web", "工程", "configs"]
 SKIP_DIR_NAMES = {"__pycache__", ".git", ".cursor", "data", "发布"}
 SKIP_FILE_SUFFIXES = {".pyc", ".pyo"}
 
-DEPLOY_TXT = f"""机器人可视化平台 — 便携部署说明
+def deploy_text(port: int) -> str:
+    return f"""机器人可视化平台 — 便携部署说明
 ================================
 
 本压缩包已内置 Python {PYTHON_VER}（官方 embed 运行时），目标电脑一般**不必再安装 Python**。
+本包网页端口已设为 {port}。config.json 与 configs\\ 里的网页 port 都是 {port}，工位 Modbus 端口仍是 502。
 
 一、环境要求
   - Windows 10/11 64 位
@@ -52,8 +53,8 @@ DEPLOY_TXT = f"""机器人可视化平台 — 便携部署说明
   1. 解压到任意目录（建议路径短、无特殊权限）
   2. 按现场选用 configs\\ 里对应产线配置，复制覆盖根目录 config.json
      （或直接改 config.json 的 stations / mode / 寄存器）
-  3. 双击 start.bat（会按 config.json 的 port 自动打开浏览器）
-  4. 其它电脑访问：http://本机IP:端口（端口同 config.json 的 port）
+  3. 双击 start.bat（会打开 http://localhost:{port}）
+  4. 其它电脑访问：http://本机IP:{port}
 
 三、目录说明
   start.bat     启动（优先用自带 runtime\\python.exe）
@@ -67,7 +68,7 @@ DEPLOY_TXT = f"""机器人可视化平台 — 便携部署说明
 
 四、注意
   - 改配置后需关掉黑窗口再重新 start.bat
-  - 若杀毒软件拦截 python.exe / 端口 8080，请加白名单或放行
+  - 若杀毒软件拦截 python.exe / 端口 {port}，请加白名单或放行
   - 本包为 64 位；极少数 32 位电脑无法直接使用
 """
 
@@ -96,7 +97,8 @@ if not defined PY (
 if not exist "data" mkdir data
 echo.
 echo  机器人可视化平台（便携版）
-echo  端口见 config.json 的 port；启动后会自动打开浏览器
+echo  网页端口 2345；启动后会自动打开浏览器
+echo  其它电脑访问 http://本机IP:2345
 echo  关闭本窗口即停止服务
 echo.
 "%PY%" server.py
@@ -187,7 +189,24 @@ def smoke_test(python_exe: Path, stage: Path) -> None:
     print("冒烟测试:", r.stdout.strip())
 
 
-def build() -> Path:
+def set_listen_port(stage: Path, port: int) -> None:
+    """只改网页服务端口。工位上的 \"port\": 502 是 Modbus，不能动。"""
+    paths = [stage / "config.json"]
+    cfg_dir = stage / "configs"
+    if cfg_dir.is_dir():
+        paths.extend(sorted(cfg_dir.glob("*.json")))
+    needle = '"port": 8080'
+    repl = '"port": %d' % port
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        count = text.count(needle)
+        if count != 1:
+            raise SystemExit("%s 里网页端口 %s 出现 %d 次，拒绝改写" % (path.name, needle, count))
+        path.write_text(text.replace(needle, repl, 1), encoding="utf-8")
+        print("网页端口 ->", port, path.relative_to(stage))
+
+
+def build(port: int) -> Path:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M")
     folder_name = f"{APP_NAME}-便携版-{stamp}"
     stage = OUT_DIR / folder_name
@@ -207,12 +226,14 @@ def build() -> Path:
             raise SystemExit(f"缺少目录: {name}")
         copy_tree(src, stage / name)
 
+    set_listen_port(stage, port)
+
     embed_zip = download_embed_zip()
     python_exe = install_runtime(stage, embed_zip)
     smoke_test(python_exe, stage)
 
-    (stage / "start.bat").write_text(START_BAT, encoding="utf-8-sig")
-    (stage / "部署说明.txt").write_text(DEPLOY_TXT, encoding="utf-8-sig")
+    (stage / "start.bat").write_text(START_BAT.replace("2345", str(port)), encoding="utf-8-sig")
+    (stage / "部署说明.txt").write_text(deploy_text(port), encoding="utf-8-sig")
     (stage / "data").mkdir(exist_ok=True)
     (stage / "data" / ".gitkeep").write_text("", encoding="utf-8")
 
@@ -229,6 +250,11 @@ def build() -> Path:
 
 
 if __name__ == "__main__":
-    path = build()
+    parser = argparse.ArgumentParser(description="打包便携部署版")
+    parser.add_argument("--port", type=int, default=2345, help="包内网页端口，默认 2345")
+    args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        raise SystemExit("--port 必须是 1~65535")
+    path = build(args.port)
     print("DONE", path)
     print("size_mb", round(path.stat().st_size / 1024 / 1024, 2))

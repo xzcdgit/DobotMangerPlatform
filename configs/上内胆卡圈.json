@@ -11,6 +11,7 @@
     "slave_id": 1,
     "timeout": 1.0,
     "offline_after_failures": 3,
+    "offline_after_sec": 5,
     "command_mode": "dobot",
     "coil_pulse_ms": 200,
     "coil_gap_ms": 200,

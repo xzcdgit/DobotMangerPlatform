@@ -73,7 +73,8 @@ function renderSampleRate(s) {
   const regs = (s.actionRegister != null && s.faultRegister != null)
     ? ` · 寄存器 ${s.actionRegister}/${s.faultRegister}`
     : "";
-  el.innerHTML = `Modbus <b>${esc(mb)}</b> · 页面 <b>${esc(page)}</b>${esc(regs)}`;
+  el.innerHTML = `<b>${esc(mb)}</b> · <b>${esc(page)}</b>`;
+  el.title = `Modbus 轮询 ${mb}，页面刷新 ${page}${regs}。Modbus 间隔来自 config.json 的 poll_interval。`;
 }
 
 function resetViewState() {
@@ -130,7 +131,10 @@ function setLevelFilter(level) {
 
 function renderTally(stations) {
   const n = { ok: 0, warn: 0, stop: 0, offline: 0, pending: 0 };
-  for (const s of stations) n[viewLevel(s)] += 1;
+  for (const s of stations) {
+    const lv = viewLevel(s);
+    if (Object.prototype.hasOwnProperty.call(n, lv)) n[lv] += 1;
+  }
   $("kpiAll").textContent = String(stations.length);
   $("kpiStop").textContent = String(n.stop);
   $("kpiWarn").textContent = String(n.warn);
@@ -179,14 +183,30 @@ function stableStations(stations) {
   return stations.slice();
 }
 
+function holdButtons(enabled) {
+  const on = enabled !== false;
+  return `<span class="hold">
+    <button type="button" data-hold="1" aria-pressed="${on}">启用</button>
+    <button type="button" data-hold="0" aria-pressed="${!on}">冻结</button>
+  </span>`;
+}
+
 function cardShell(s) {
-  return `<button type="button" class="card" data-id="${esc(s.id)}" data-level="pending" aria-label="">
-    <span class="name">${esc(s.name)} <span class="code">···</span></span>
-    <span class="lv">连接中</span>
-    <span class="step">等待第一次读数</span>
-    <span class="beat">本步 —</span>
-    <span class="meta"><span class="addr">${esc(s.ip)}:${esc(s.port)}</span><span class="dur" data-since="${s.since}">—</span></span>
-  </button>`;
+  return `<article class="card" data-id="${esc(s.id)}" data-level="pending">
+    <button type="button" class="card-open" aria-label="">
+      <span class="no">#${esc(s.no)}</span>
+      <span class="name">${esc(s.name)} <span class="code">···</span></span>
+      <span class="lv">连接中</span>
+      <span class="step">等待第一次读数</span>
+      <span class="metrics">
+        <span><i>本步</i><b class="dur" data-since="${s.since}">—</b></span>
+        <span><i>典型</i><b class="m-avg">—</b></span>
+        <span><i>节拍</i><b class="m-cyc">—</b></span>
+      </span>
+      <span class="addr">${esc(s.ip)}:${esc(s.port)}</span>
+    </button>
+    ${holdButtons(true)}
+  </article>`;
 }
 
 /* ---------- 节拍：按工位固定动作顺序。只计已走完的步，典型值用中位数，偏长的圈不抬高节拍 ---------- */
@@ -470,24 +490,29 @@ function patchCard(el, s, now) {
   const lvEl = el.querySelector(".lv");
   const nameEl = el.querySelector(".name");
   const stepEl = el.querySelector(".step");
-  const beatEl = el.querySelector(".beat");
+  const avgEl = el.querySelector(".m-avg");
+  const cycEl = el.querySelector(".m-cyc");
   const durEl = el.querySelector(".dur");
 
   if (lvEl.textContent !== lvText) lvEl.textContent = lvText;
   const nameHtml = `${esc(s.name)}${paused} <span class="code">${esc(code)}</span>`;
   if (nameEl._html !== nameHtml) { nameEl._html = nameHtml; nameEl.innerHTML = nameHtml; }
   if (stepEl.textContent !== step) stepEl.textContent = step;
-
-  let beatText = s.known ? `本步 <b>${fmtBeat(curSec)}</b>` : "本步 —";
-  if (avg !== null && avg > 0) beatText += ` · 典型 ${fmtBeat(avg)}`;
-  if (cyc) beatText += ` · 节拍 ${fmtBeat(cyc.avg)}`;
-  if (beatEl && beatEl._html !== beatText) { beatEl._html = beatText; beatEl.innerHTML = beatText; }
+  if (avgEl) avgEl.textContent = avg !== null && avg > 0 ? fmtBeat(avg) : "—";
+  if (cycEl) cycEl.textContent = cyc ? fmtBeat(cyc.avg) : "—";
 
   if (durEl) {
     durEl.dataset.since = String(s.since);
-    durEl.textContent = fmtDur(curSec);
+    if (avg !== null && avg > 0) durEl.dataset.avg = String(avg);
+    else delete durEl.dataset.avg;
+    durEl.textContent = s.known ? fmtBeat(curSec) : "—";
   }
-  el.setAttribute("aria-label", `${stationLabel(s)} ${lvText} ${step}`);
+  const open = el.querySelector(".card-open");
+  if (open) open.setAttribute("aria-label", `${stationLabel(s)} ${lvText} ${step}`);
+  el.querySelectorAll("[data-hold]").forEach((b) => {
+    const pressed = b.dataset.hold === "1" ? s.enabled !== false : s.enabled === false;
+    b.setAttribute("aria-pressed", String(pressed));
+  });
 }
 
 function renderFleet(state) {
@@ -507,8 +532,15 @@ function renderFleet(state) {
       const lv = c.dataset.level;
       return lv === "stop" || lv === "warn" || lv === "offline";
     }).length;
+    const outs = cards
+      .map((c) => byId.get(c.dataset.id))
+      .map(stationPieces)
+      .filter((o) => o && o.takt > 0);
+    const takt = outs.length ? Math.max(...outs.map((o) => o.takt)) : null;
+    const made = outs.length ? Math.min(...outs.map((o) => o.n)) : null;
+    const pace = takt != null ? ` · 节拍 ${fmtBeat(takt)} · 产量 ${made}` : "";
     const meta = g.querySelector("[data-group-meta]");
-    if (meta) meta.innerHTML = `${cards.length} 台${bad ? ` · <em>${bad} 告警</em>` : ""}`;
+    if (meta) meta.innerHTML = `${cards.length} 台${bad ? ` · <em>${bad} 告警</em>` : ""}${pace}`;
   });
 
   applyFilter();
@@ -538,7 +570,7 @@ function renderActive(state) {
     return `<button type="button" class="alarm-item ${lv}" data-id="${esc(s.id)}">
       <span class="ai-mark" aria-hidden="true"></span>
       <span class="ai-body"><b>${esc(attentionText(s))}</b><small>${esc(s.name)} · #${esc(s.no)} · ${esc(code)}</small></span>
-      <span class="ai-dur dur" data-since="${s.since}">${fmtDur(state.now - s.since)}</span>
+      <span class="ai-dur dur" data-since="${s.since}"></span>
     </button>`;
   }).join("");
   setHTML($("activeList"), html);
@@ -558,6 +590,80 @@ function alertHTML(ev) {
     <time>${fmtTime(ev.t)}</time><span class="ai-mark" aria-hidden="true"></span>
     <span class="ai-body"><span class="t1">${title}</span><span class="t2">${sub}</span></span>
   </li>`;
+}
+
+function stationPieces(s) {
+  if (!s || s.enabled === false || !s.known) return null;
+  const cyc = cycleBeat(s);
+  if (!cyc) return null;
+  return { takt: cyc.avg, n: cyc.n + (cyc.dropped || 0) };
+}
+
+function lineLevel(counts) {
+  const watched = (counts.ok || 0) + (counts.warn || 0) + (counts.stop || 0) + (counts.offline || 0) + (counts.pending || 0);
+  if (!watched) return counts.frozen ? "frozen" : "offline";
+  if (counts.stop) return "stop";
+  if (counts.warn) return "warn";
+  if (counts.ok) return "ok";
+  return "offline";
+}
+
+const LINE_TEXT = { ok: "在产", warn: "异常", stop: "停机", offline: "离线", frozen: "冻结" };
+
+function renderLine(state) {
+  const box = $("lineBoard");
+  const kpis = $("lineKpis");
+  if (!box || !kpis) return;
+  const stations = stableStations(state.stations || []);
+  const groups = new Map();
+  for (const s of stations) {
+    const g = groupOf(s);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(s);
+  }
+  let pieces = 0;
+  let bottleneck = null;
+  const sections = [];
+  for (const [name, items] of groups) {
+    const counts = { ok: 0, warn: 0, stop: 0, offline: 0, pending: 0 };
+    const rows = items.map((s) => {
+      const lv = viewLevel(s);
+      counts[lv] = (counts[lv] || 0) + 1;
+      return { s, lv, out: stationPieces(s) };
+    });
+    const withOut = rows.filter((r) => r.out && r.out.takt > 0);
+    const slow = withOut.reduce((a, b) => (b.out.takt > a.out.takt ? b : a), withOut[0] || null);
+    const made = withOut.length ? Math.min(...withOut.map((r) => r.out.n)) : null;
+    const lv = lineLevel(counts);
+    if (made != null) pieces += made;
+    if (slow && (!bottleneck || slow.out.takt > bottleneck.out.takt)) bottleneck = slow;
+    const online = items.filter((s) => s.enabled !== false && s.known && s.code !== null).length;
+    sections.push(`<section class="line" data-level="${lv}">
+      <div class="line-head"><h3>${esc(name)}</h3><span class="muted">${items.length} 个工位</span><span class="lv">${LINE_TEXT[lv]}</span></div>
+      <div class="line-metrics">
+        <div><b>${slow ? fmtBeat(slow.out.takt) : "—"}</b><span>产线节拍</span></div>
+        <div><b>${made == null ? "—" : made}</b><span>窗口产量</span></div>
+        <div><b>${slow ? esc(slow.s.name) : "—"}</b><span>瓶颈工位</span></div>
+        <div><b>${online}/${items.length}</b><span>在线工位</span></div>
+      </div>
+      <div class="line-stations">${rows.map(({ s, lv: stLv, out }) => {
+        const step = s.enabled === false ? "已冻结" : (!s.known ? "等待读数" : (s.code === null ? codeName(null) : codeName(s.action ?? s.code)));
+        const takt = out ? fmtBeat(out.takt) : "—";
+        const n = out ? `${out.n} 圈` : "尚无整圈";
+        return `<button type="button" class="line-st" data-id="${esc(s.id)}" data-level="${stLv}">
+          <b>${esc(s.name)}</b>
+          <span>${esc(step)}</span>
+          <small>${takt} · ${n}</small>
+        </button>`;
+      }).join("")}</div>
+    </section>`);
+  }
+  kpis.innerHTML = `
+    <div><b>${groups.size}</b><span>产线</span></div>
+    <div><b>${stations.length}</b><span>工位</span></div>
+    <div><b>${groups.size ? pieces : "—"}</b><span>窗口产量</span></div>
+    <div><b>${bottleneck ? fmtBeat(bottleneck.out.takt) : "—"}</b><span>最慢节拍</span></div>`;
+  setHTML(box, sections.join("") || `<p class="muted">还没有工位。</p>`);
 }
 
 function renderAlerts(state) {
@@ -607,6 +713,8 @@ function openDrawer(id) {
     <div id="dHead"></div>
     <section class="ctrl" aria-label="操作">
       <h3 class="d-sec">操作</h3>
+      ${holdButtons(true)}
+      <p class="ctrl-note">启用后继续轮询和告警。冻结后不再读这台、不再报警，也不会给机器人下发停止。</p>
       <div class="ctrl-btns">
         <button class="btn" data-cmd="reset">复位</button>
         <button class="btn primary" data-cmd="start">开始</button>
@@ -634,6 +742,14 @@ function syncControls() {
   if (!s) return;
   const can = s.canControl && !view.busy;
   document.querySelectorAll("#drawerBody [data-cmd]").forEach((b) => { b.disabled = !can; });
+  document.querySelectorAll("#drawerBody [data-hold]").forEach((b) => { b.disabled = view.busy; });
+  const open = findStation(ui.openStation);
+  if (open) {
+    document.querySelectorAll("#drawerBody [data-hold]").forEach((b) => {
+      const pressed = b.dataset.hold === "1" ? open.enabled !== false : open.enabled === false;
+      b.setAttribute("aria-pressed", String(pressed));
+    });
+  }
   const pin = s.pinRequired ? "操作前需输入操作密码；" : "";
   const modeHint = s.commandMode === "dobot"
     ? "真实模式按越疆线圈控制：开始/停止为上升沿脉冲；复位=清报警→下使能(等待)→上使能(等待)。"
@@ -780,6 +896,29 @@ function renderDrawer() {
   syncControls();
 }
 
+async function setStationEnabled(id, enabled) {
+  const s = findStation(id);
+  if (!s || view.busy || (s.enabled !== false) === enabled) return;
+  const label = enabled ? "启用" : "冻结";
+  const text = enabled
+    ? "恢复这台工位的轮询和告警。不会向机器人下发动作。"
+    : "停止这台工位的轮询和告警，卡片保留最后状态。不会停止机器人。";
+  const answer = await ask({ title: `${label}：${stationLabel(s)}`, text, okText: `确认${label}`, danger: !enabled });
+  if (!answer) return;
+  view.busy = true;
+  syncControls();
+  try {
+    const res = await api("POST", "/api/station", { id, enabled, pin: answer.pin });
+    toast(`${s.name}：${label}${res.changed === false ? "未变化" : "已完成"}。${res.detail || ""}`, res.ok ? "ok" : "error");
+  } catch (e) {
+    toast(`${s.name}：${label}失败。${e.message}`, "error");
+  } finally {
+    view.busy = false;
+    syncControls();
+    poll();
+  }
+}
+
 async function runCommand(cmd) {
   const s = findStation(ui.openStation);
   if (!s || view.busy) return;
@@ -810,6 +949,7 @@ function render() {
   renderFleet(s);
   renderActive(s);
   renderAlerts(s);
+  renderLine(s);
   checkNewStops(s);
   renderDrawer();
   fillStationSelect();
@@ -844,21 +984,14 @@ function tickDurations() {
   if (!ui.state) return;
   const now = serverNow();
   document.querySelectorAll(".dur[data-since]").forEach((el) => {
-    el.textContent = fmtDur(now - Number(el.dataset.since));
-  });
-  /* 卡片「本步」时长按 ms 刷新，不必等下一轮 poll */
-  const byId = new Map(ui.state.stations.map((s) => [s.id, s]));
-  document.querySelectorAll(".card[data-id]").forEach((el) => {
-    const s = byId.get(el.dataset.id);
-    const beatEl = el.querySelector(".beat");
-    if (!s || !beatEl || !s.known) return;
-    const curSec = now - s.since;
-    const avg = avgForCode(s, s.action ?? s.code);
-    const cyc = cycleBeat(s);
-    let beatText = `本步 <b>${fmtBeat(curSec)}</b>`;
-    if (avg !== null && avg > 0) beatText += ` · 典型 ${fmtBeat(avg)}`;
-    if (cyc) beatText += ` · 节拍 ${fmtBeat(cyc.avg)}`;
-    if (beatEl._html !== beatText) { beatEl._html = beatText; beatEl.innerHTML = beatText; }
+    const sec = now - Number(el.dataset.since);
+    if (el.closest(".card")) {
+      el.textContent = fmtBeat(sec);
+      const avg = Number(el.dataset.avg);
+      el.classList.toggle("is-late", avg > 0.4 && sec > avg * 1.8);
+    } else {
+      el.textContent = fmtDur(sec);
+    }
   });
   $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
 }
@@ -906,9 +1039,23 @@ function bind() {
   });
   $("search").addEventListener("input", (e) => { view.query = e.target.value; applyFilter(); });
   $("fleet").addEventListener("click", (e) => {
-    const c = e.target.closest(".card");
-    if (c && !c.classList.contains("is-dim")) jumpToStation(c.dataset.id);
+    const hold = e.target.closest("[data-hold]");
+    if (hold) {
+      const card = hold.closest(".card");
+      if (card) setStationEnabled(card.dataset.id, hold.dataset.hold === "1");
+      return;
+    }
+    const c = e.target.closest(".card-open");
+    const card = c && c.closest(".card");
+    if (card && !card.classList.contains("is-dim")) jumpToStation(card.dataset.id);
   });
+  const lineBoard = $("lineBoard");
+  if (lineBoard) {
+    lineBoard.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-id]");
+      if (b) jumpToStation(b.dataset.id);
+    });
+  }
   $("activeList").addEventListener("click", (e) => {
     const b = e.target.closest("[data-id]");
     if (b) jumpToStation(b.dataset.id);
@@ -921,6 +1068,11 @@ function bind() {
   $("closeDrawer").addEventListener("click", closeDrawer);
   $("scrim").addEventListener("click", closeDrawer);
   $("drawerBody").addEventListener("click", (e) => {
+    const hold = e.target.closest("[data-hold]");
+    if (hold) {
+      setStationEnabled(ui.openStation, hold.dataset.hold === "1");
+      return;
+    }
     const b = e.target.closest("[data-cmd]");
     if (b) runCommand(b.dataset.cmd);
   });
